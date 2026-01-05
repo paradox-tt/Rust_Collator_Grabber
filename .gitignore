@@ -21,3 +21,5 @@ target
 #.idea/
 .env
 config.toml
+.idea
+Cargo.lock
