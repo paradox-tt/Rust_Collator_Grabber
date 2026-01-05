@@ -1,0 +1,75 @@
+# Collator Monitor Configuration
+# ================================
+# This file can be named config.toml and placed in the working directory,
+# or values can be set via environment variables prefixed with COLLATOR_
+# (e.g., COLLATOR_POLKADOT_COLLATOR_ADDRESS)
+
+# Your collator account address on Polkadot-based chains (SS58 format)
+polkadot_collator_address = "1YOURPOLKADOTADDRESSHERE1234567890123456789"
+
+# Your collator account address on Kusama-based chains (SS58 format)
+kusama_collator_address = "CYOURKUSAMAADDRESSHERE1234567890123456789012"
+
+# Proxy account seed - this account signs transactions on behalf of the collator
+# The proxy should be configured as NonTransfer type on-chain
+# Can be a mnemonic phrase, hex seed (0x...), or derivation path (//Alice for dev)
+# IMPORTANT: Keep this secret! Use environment variable COLLATOR_PROXY_SEED in production
+proxy_seed = "your twelve or twenty four word mnemonic phrase goes here"
+
+# Slack webhook URL for notifications (optional)
+# If not set, notifications will be logged instead of sent to Slack
+slack_webhook_url = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+# How often to check collator status in continuous mode (seconds)
+check_interval_secs = 3600  # 1 hour
+
+# Chain-specific configurations (optional)
+# If not specified, default LuckyFriday RPC endpoints will be used
+# Format: [chains."network_chain"]
+#
+# NOTE: BridgeHub chains do NOT support proxy accounts for collator registration
+#       and are automatically skipped by the monitor.
+
+# Polkadot chains (LuckyFriday endpoints)
+[chains.polkadot_assethub]
+rpc_url = "wss://rpc-asset-hub-polkadot.luckyfriday.io"
+enabled = true
+
+# BridgeHub does NOT support proxy accounts - skipped automatically
+[chains.polkadot_bridgehub]
+rpc_url = "wss://rpc-bridge-hub-polkadot.luckyfriday.io"
+enabled = false
+
+[chains.polkadot_collectives]
+rpc_url = "wss://rpc-collectives-polkadot.luckyfriday.io"
+enabled = true
+
+[chains.polkadot_coretime]
+rpc_url = "wss://rpc-coretime-polkadot.luckyfriday.io"
+enabled = true
+
+[chains.polkadot_people]
+rpc_url = "wss://rpc-people-polkadot.luckyfriday.io"
+enabled = true
+
+# Kusama chains (LuckyFriday endpoints)
+[chains.kusama_assethub]
+rpc_url = "wss://rpc-asset-hub-kusama.luckyfriday.io"
+enabled = true
+
+# BridgeHub does NOT support proxy accounts - skipped automatically
+[chains.kusama_bridgehub]
+rpc_url = "wss://rpc-bridge-hub-kusama.luckyfriday.io"
+enabled = false
+
+[chains.kusama_coretime]
+rpc_url = "wss://rpc-coretime-kusama.luckyfriday.io"
+enabled = true
+
+[chains.kusama_people]
+rpc_url = "wss://rpc-people-kusama.luckyfriday.io"
+enabled = true
+
+[chains.kusama_encointer]
+rpc_url = "wss://rpc-encointer-kusama.luckyfriday.io"
+enabled = true
