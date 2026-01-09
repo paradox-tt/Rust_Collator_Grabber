@@ -114,9 +114,13 @@ impl ChainClient {
         match result {
             Some(value) => {
                 let decoded = value.to_value()?;
+                debug!("Raw Invulnerables data: {:?}", decoded);
                 parse_account_list(&decoded)
             }
-            None => Ok(vec![]),
+            None => {
+                debug!("Invulnerables storage returned None");
+                Ok(vec![])
+            }
         }
     }
 
@@ -135,9 +139,13 @@ impl ChainClient {
         match result {
             Some(value) => {
                 let decoded = value.to_value()?;
+                debug!("Raw CandidateList data: {:?}", decoded);
                 parse_candidate_list(&decoded)
             }
-            None => Ok(vec![]),
+            None => {
+                debug!("CandidateList storage returned None");
+                Ok(vec![])
+            }
         }
     }
 
@@ -376,23 +384,43 @@ use subxt::ext::scale_value::{Value as ScaleValue, ValueDef, Composite, Primitiv
 fn parse_account_list<T: std::fmt::Debug>(value: &ScaleValue<T>) -> Result<Vec<AccountId32>> {
     let mut accounts = Vec::new();
 
-    if let ValueDef::Composite(composite) = &value.value {
-        match composite {
-            Composite::Unnamed(items) => {
+    match &value.value {
+        // The value might be wrapped in a newtype (accessing .0)
+        ValueDef::Composite(Composite::Unnamed(items)) => {
+            // Check if this is a single-element wrapper or the actual list
+            if items.len() == 1 {
+                // Could be a newtype wrapper, try to recurse
+                if let Ok(inner_accounts) = parse_account_list(&items[0]) {
+                    if !inner_accounts.is_empty() {
+                        return Ok(inner_accounts);
+                    }
+                }
+                // Otherwise try to parse as a single account
+                if let Ok(account) = parse_account_id(&items[0]) {
+                    accounts.push(account);
+                }
+            } else {
+                // Multiple items - this is the actual list
                 for item in items {
                     if let Ok(account) = parse_account_id(item) {
                         accounts.push(account);
                     }
                 }
             }
-            Composite::Named(items) => {
-                for (_, item) in items {
-                    if let Ok(account) = parse_account_id(item) {
-                        accounts.push(account);
-                    }
+        }
+        ValueDef::Composite(Composite::Named(items)) => {
+            // Check for "0" field (newtype) or iterate named fields
+            for (name, item) in items {
+                if name == "0" {
+                    // This is a newtype wrapper, recurse into it
+                    return parse_account_list(item);
+                }
+                if let Ok(account) = parse_account_id(item) {
+                    accounts.push(account);
                 }
             }
         }
+        _ => {}
     }
 
     Ok(accounts)
@@ -401,23 +429,43 @@ fn parse_account_list<T: std::fmt::Debug>(value: &ScaleValue<T>) -> Result<Vec<A
 fn parse_candidate_list<T: std::fmt::Debug>(value: &ScaleValue<T>) -> Result<Vec<CandidateInfo>> {
     let mut candidates = Vec::new();
 
-    if let ValueDef::Composite(composite) = &value.value {
-        match composite {
-            Composite::Unnamed(items) => {
+    match &value.value {
+        // The value might be wrapped in a newtype (accessing .0)
+        ValueDef::Composite(Composite::Unnamed(items)) => {
+            // Check if this is a single-element wrapper or the actual list
+            if items.len() == 1 {
+                // Could be a newtype wrapper, try to recurse
+                if let Ok(inner_candidates) = parse_candidate_list(&items[0]) {
+                    if !inner_candidates.is_empty() {
+                        return Ok(inner_candidates);
+                    }
+                }
+                // Otherwise try to parse as a single candidate
+                if let Ok(candidate) = parse_candidate_info(&items[0]) {
+                    candidates.push(candidate);
+                }
+            } else {
+                // Multiple items - this is the actual list
                 for item in items {
                     if let Ok(candidate) = parse_candidate_info(item) {
                         candidates.push(candidate);
                     }
                 }
             }
-            Composite::Named(items) => {
-                for (_, item) in items {
-                    if let Ok(candidate) = parse_candidate_info(item) {
-                        candidates.push(candidate);
-                    }
+        }
+        ValueDef::Composite(Composite::Named(items)) => {
+            // Check for "0" field (newtype) or iterate named fields
+            for (name, item) in items {
+                if name == "0" {
+                    // This is a newtype wrapper, recurse into it
+                    return parse_candidate_list(item);
+                }
+                if let Ok(candidate) = parse_candidate_info(item) {
+                    candidates.push(candidate);
                 }
             }
         }
+        _ => {}
     }
 
     Ok(candidates)
@@ -446,35 +494,47 @@ fn parse_candidate_info<T: std::fmt::Debug>(value: &ScaleValue<T>) -> Result<Can
 }
 
 fn parse_account_id<T: std::fmt::Debug>(value: &ScaleValue<T>) -> Result<AccountId32> {
+    // Debug: print the value structure to understand the format
+    // tracing::debug!("Parsing account from: {:?}", value);
+    
     // Try to extract bytes from various representations
-    if let ValueDef::Composite(composite) = &value.value {
-        match composite {
-            Composite::Unnamed(items) if items.len() == 1 => {
+    match &value.value {
+        // Direct 32-byte array as unnamed composite
+        ValueDef::Composite(Composite::Unnamed(items)) => {
+            if items.len() == 1 {
+                // Wrapped in a single-element tuple, recurse
                 return parse_account_id(&items[0]);
-            }
-            Composite::Unnamed(items) if items.len() == 32 => {
+            } else if items.len() == 32 {
+                // 32 individual bytes
                 let mut bytes = [0u8; 32];
                 for (i, item) in items.iter().enumerate() {
-                    if let ValueDef::Primitive(Primitive::U128(n)) = &item.value {
-                        bytes[i] = *n as u8;
+                    match &item.value {
+                        ValueDef::Primitive(Primitive::U128(n)) => bytes[i] = *n as u8,
+                        _ => return Err(anyhow::anyhow!("Expected u8 in account bytes")),
                     }
                 }
                 return Ok(AccountId32(bytes));
             }
-            _ => {}
         }
-    }
-
-    // Try primitive u256 (sometimes used for account ids in some contexts)
-    if let ValueDef::Primitive(prim) = &value.value {
-        if let Primitive::U256(bytes) = prim {
+        // Named composite (might have an inner field)
+        ValueDef::Composite(Composite::Named(fields)) => {
+            // Look for common field names
+            for (name, val) in fields {
+                if name == "0" || name == "id" || name == "account" {
+                    return parse_account_id(val);
+                }
+            }
+        }
+        // U256 primitive (32 bytes)
+        ValueDef::Primitive(Primitive::U256(bytes)) => {
             let mut account_bytes = [0u8; 32];
             account_bytes.copy_from_slice(&bytes[..32]);
             return Ok(AccountId32(account_bytes));
         }
+        _ => {}
     }
 
-    Err(anyhow::anyhow!("Failed to parse AccountId32"))
+    Err(anyhow::anyhow!("Failed to parse AccountId32 from: {:?}", value))
 }
 
 fn parse_u128<T: std::fmt::Debug>(value: &ScaleValue<T>) -> Result<u128> {

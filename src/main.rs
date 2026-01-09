@@ -149,17 +149,12 @@ async fn run_status(config: AppConfig) -> Result<()> {
     ];
 
     println!("\n=== Polkadot System Chains ===");
-    println!("Collator address: {}\n", config.polkadot_collator_address);
+    println!("Looking for collator: {}\n", config.polkadot_collator_address);
 
     for chain in polkadot_chains {
-        if !chain_supports_proxy(chain) {
-            println!(
-                "  {}: Skipped (no proxy support)",
-                chain.display_name(Network::Polkadot)
-            );
-            continue;
-        }
-
+        let supports_proxy = chain_supports_proxy(chain);
+        let read_only_marker = if !supports_proxy { " [READ-ONLY - no proxy support]" } else { "" };
+        
         let rpc_url = config
             .chain_config(Network::Polkadot, chain)
             .map(|c| c.rpc_url.as_str())
@@ -170,15 +165,71 @@ async fn run_status(config: AppConfig) -> Result<()> {
                 let account = client.parse_address(&config.polkadot_collator_address)?;
                 let status = client.get_collator_status(&account).await?;
                 let balance = client.get_free_balance(&account).await?;
-                let bond = client.get_candidacy_bond().await?;
+                let min_bond = client.get_candidacy_bond().await?;
+                
+                // Get invulnerables and candidates for display
+                let invulnerables = client.get_invulnerables().await?;
+                let candidates = client.get_candidates().await?;
+                
+                // Calculate competitive bond info
+                let lowest_candidate_bond = candidates.iter().filter(|c| c.deposit > 0).map(|c| c.deposit).min();
+                let highest_candidate_bond = candidates.iter().map(|c| c.deposit).max();
+                
+                let decimals = 10_000_000_000.0; // DOT decimals
 
+                println!("  {}{}:", chain.display_name(Network::Polkadot), read_only_marker);
+                println!("    Your Status: {:?}", status);
                 println!(
-                    "  {}: {:?}, Balance: {:.4} DOT, Min Bond: {:.4} DOT",
-                    chain.display_name(Network::Polkadot),
-                    status,
-                    balance as f64 / 10_000_000_000.0,
-                    bond as f64 / 10_000_000_000.0
+                    "    Your Balance: {:.4} DOT",
+                    balance as f64 / decimals
                 );
+                println!("    Bond Requirements:");
+                println!("      - Minimum to register: {:.4} DOT", min_bond as f64 / decimals);
+                if let Some(lowest) = lowest_candidate_bond {
+                    println!("      - To beat lowest candidate: {:.4} DOT", (lowest + 1) as f64 / decimals);
+                }
+                if let Some(highest) = highest_candidate_bond {
+                    println!("      - To be top candidate: {:.4} DOT", (highest + 1) as f64 / decimals);
+                }
+                
+                // Show if user can compete
+                let reserve = 10_000_000_000u128; // 1 DOT reserve
+                let available = balance.saturating_sub(reserve);
+                println!("    Your Available for Bond: {:.4} DOT (after 1 DOT reserve)", available as f64 / decimals);
+                
+                if let Some(lowest) = lowest_candidate_bond {
+                    if available > lowest {
+                        println!("    ✓ Can beat lowest candidate");
+                    } else {
+                        let needed = lowest.saturating_sub(available) + 1;
+                        println!("    ✗ Need {:.4} more DOT to beat lowest candidate", needed as f64 / decimals);
+                    }
+                }
+                if let Some(highest) = highest_candidate_bond {
+                    if available > highest {
+                        println!("    ✓ Can be top candidate");
+                    } else {
+                        let needed = highest.saturating_sub(available) + 1;
+                        println!("    ✗ Need {:.4} more DOT to be top candidate", needed as f64 / decimals);
+                    }
+                }
+                
+                println!("    Invulnerables ({}):", invulnerables.len());
+                for inv in &invulnerables {
+                    let marker = if inv == &account { " <-- YOU" } else { "" };
+                    println!("      - {}{}", inv, marker);
+                }
+                println!("    Candidates ({}):", candidates.len());
+                for cand in &candidates {
+                    let marker = if cand.who == account { " <-- YOU" } else { "" };
+                    println!(
+                        "      - {} (bond: {:.4} DOT){}",
+                        cand.who,
+                        cand.deposit as f64 / decimals,
+                        marker
+                    );
+                }
+                println!();
             }
             Err(e) => {
                 println!(
@@ -191,16 +242,11 @@ async fn run_status(config: AppConfig) -> Result<()> {
     }
 
     println!("\n=== Kusama System Chains ===");
-    println!("Collator address: {}\n", config.kusama_collator_address);
+    println!("Looking for collator: {}\n", config.kusama_collator_address);
 
     for chain in kusama_chains {
-        if !chain_supports_proxy(chain) {
-            println!(
-                "  {}: Skipped (no proxy support)",
-                chain.display_name(Network::Kusama)
-            );
-            continue;
-        }
+        let supports_proxy = chain_supports_proxy(chain);
+        let read_only_marker = if !supports_proxy { " [READ-ONLY - no proxy support]" } else { "" };
 
         let rpc_url = config
             .chain_config(Network::Kusama, chain)
@@ -212,15 +258,71 @@ async fn run_status(config: AppConfig) -> Result<()> {
                 let account = client.parse_address(&config.kusama_collator_address)?;
                 let status = client.get_collator_status(&account).await?;
                 let balance = client.get_free_balance(&account).await?;
-                let bond = client.get_candidacy_bond().await?;
+                let min_bond = client.get_candidacy_bond().await?;
+                
+                // Get invulnerables and candidates for display
+                let invulnerables = client.get_invulnerables().await?;
+                let candidates = client.get_candidates().await?;
+                
+                // Calculate competitive bond info
+                let lowest_candidate_bond = candidates.iter().filter(|c| c.deposit > 0).map(|c| c.deposit).min();
+                let highest_candidate_bond = candidates.iter().map(|c| c.deposit).max();
+                
+                let decimals = 1_000_000_000_000.0; // KSM decimals
 
+                println!("  {}{}:", chain.display_name(Network::Kusama), read_only_marker);
+                println!("    Your Status: {:?}", status);
                 println!(
-                    "  {}: {:?}, Balance: {:.4} KSM, Min Bond: {:.4} KSM",
-                    chain.display_name(Network::Kusama),
-                    status,
-                    balance as f64 / 1_000_000_000_000.0,
-                    bond as f64 / 1_000_000_000_000.0
+                    "    Your Balance: {:.4} KSM",
+                    balance as f64 / decimals
                 );
+                println!("    Bond Requirements:");
+                println!("      - Minimum to register: {:.4} KSM", min_bond as f64 / decimals);
+                if let Some(lowest) = lowest_candidate_bond {
+                    println!("      - To beat lowest candidate: {:.4} KSM", (lowest + 1) as f64 / decimals);
+                }
+                if let Some(highest) = highest_candidate_bond {
+                    println!("      - To be top candidate: {:.4} KSM", (highest + 1) as f64 / decimals);
+                }
+                
+                // Show if user can compete
+                let reserve = 100_000_000_000u128; // 0.1 KSM reserve
+                let available = balance.saturating_sub(reserve);
+                println!("    Your Available for Bond: {:.4} KSM (after 0.1 KSM reserve)", available as f64 / decimals);
+                
+                if let Some(lowest) = lowest_candidate_bond {
+                    if available > lowest {
+                        println!("    ✓ Can beat lowest candidate");
+                    } else {
+                        let needed = lowest.saturating_sub(available) + 1;
+                        println!("    ✗ Need {:.4} more KSM to beat lowest candidate", needed as f64 / decimals);
+                    }
+                }
+                if let Some(highest) = highest_candidate_bond {
+                    if available > highest {
+                        println!("    ✓ Can be top candidate");
+                    } else {
+                        let needed = highest.saturating_sub(available) + 1;
+                        println!("    ✗ Need {:.4} more KSM to be top candidate", needed as f64 / decimals);
+                    }
+                }
+                
+                println!("    Invulnerables ({}):", invulnerables.len());
+                for inv in &invulnerables {
+                    let marker = if inv == &account { " <-- YOU" } else { "" };
+                    println!("      - {}{}", inv, marker);
+                }
+                println!("    Candidates ({}):", candidates.len());
+                for cand in &candidates {
+                    let marker = if cand.who == account { " <-- YOU" } else { "" };
+                    println!(
+                        "      - {} (bond: {:.4} KSM){}",
+                        cand.who,
+                        cand.deposit as f64 / decimals,
+                        marker
+                    );
+                }
+                println!();
             }
             Err(e) => {
                 println!("  {}: Error - {}", chain.display_name(Network::Kusama), e);
@@ -245,6 +347,13 @@ fn print_results(results: &[crate::monitor::MonitorResult]) {
             }
             MonitorStatus::InsufficientFunds { available, required } => {
                 format!("✗ Insufficient funds: have {}, need {}", available, required)
+            }
+            MonitorStatus::CannotCompete { available, lowest_candidate, needed } => {
+                format!("✗ Cannot compete: have {}, lowest candidate {}, need {} more", 
+                    available, lowest_candidate, needed)
+            }
+            MonitorStatus::ManualActionRequired { reason, current_status } => {
+                format!("🔧 Manual action required: {} (current: {:?})", reason, current_status)
             }
             MonitorStatus::Error(e) => format!("✗ Error: {}", e),
             MonitorStatus::Skipped(reason) => format!("- Skipped: {}", reason),

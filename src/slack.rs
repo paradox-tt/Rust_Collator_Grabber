@@ -171,6 +171,59 @@ impl SlackNotifier {
 
         self.notify(&message).await
     }
+
+    /// Send an alert about being unable to compete with existing candidates
+    pub async fn alert_cannot_compete(
+        &self,
+        chain_name: &str,
+        collator_address: &str,
+        available_balance: u128,
+        lowest_candidate_bond: u128,
+        needed: u128,
+        token_symbol: &str,
+        decimals: u32,
+    ) -> Result<()> {
+        let available = format_balance(available_balance, decimals);
+        let lowest = format_balance(lowest_candidate_bond, decimals);
+        let need_more = format_balance(needed, decimals);
+
+        let message = format!(
+            "⚠️ *Cannot Compete for Collator Slot*\n\n\
+            *Chain:* {}\n\
+            *Collator:* `{}`\n\n\
+            Unable to register - bond too low to beat existing candidates.\n\
+            • Your available bond: {} {}\n\
+            • Lowest candidate bond: {} {}\n\
+            • Need additional: {} {}\n\n\
+            Please top up the account to compete for a collator slot.",
+            chain_name, collator_address, 
+            available, token_symbol, 
+            lowest, token_symbol,
+            need_more, token_symbol
+        );
+
+        self.notify(&message).await
+    }
+
+    /// Send an alert when manual action is required (e.g., BridgeHub or disabled chains)
+    pub async fn alert_manual_action_required(
+        &self,
+        chain_name: &str,
+        collator_address: &str,
+        action_required: &str,
+    ) -> Result<()> {
+        let message = format!(
+            "🔧 *Manual Action Required*\n\n\
+            *Chain:* {}\n\
+            *Collator:* `{}`\n\n\
+            Automatic action not possible on this chain.\n\
+            *Action needed:* {}\n\n\
+            Please perform this action manually via Polkadot.js or similar.",
+            chain_name, collator_address, action_required
+        );
+
+        self.notify(&message).await
+    }
 }
 
 /// Format a balance with proper decimal places

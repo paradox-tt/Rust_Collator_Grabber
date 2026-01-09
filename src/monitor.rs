@@ -8,6 +8,22 @@ use crate::chain_client::{ChainClient, CollatorStatus};
 use crate::config::{chain_supports_proxy, default_rpc_url, AppConfig, Network, SystemChain};
 use crate::slack::SlackNotifier;
 
+/// Format a balance with proper decimal places and symbol
+fn format_balance(balance: u128, decimals: u32, symbol: &str) -> String {
+    let divisor = 10u128.pow(decimals);
+    let whole = balance / divisor;
+    let fraction = balance % divisor;
+
+    if fraction == 0 {
+        format!("{} {}", whole, symbol)
+    } else {
+        let fraction_str = format!("{:0>width$}", fraction, width = decimals as usize);
+        let trimmed = fraction_str.trim_end_matches('0');
+        let display_decimals = trimmed.len().min(4);
+        format!("{}.{} {}", whole, &fraction_str[..display_decimals], symbol)
+    }
+}
+
 /// Result of monitoring a single chain
 #[derive(Debug)]
 pub struct MonitorResult {
@@ -23,8 +39,12 @@ pub enum MonitorStatus {
     RegisteredAsCandidate { bond: u128, tx_hash: String },
     /// Successfully updated bond to higher amount
     UpdatedBond { old_bond: u128, new_bond: u128, tx_hash: String },
-    /// Could not register due to insufficient funds
+    /// Could not register due to insufficient funds for minimum bond
     InsufficientFunds { available: u128, required: u128 },
+    /// Could not compete - bond too low to beat lowest candidate
+    CannotCompete { available: u128, lowest_candidate: u128, needed: u128 },
+    /// Manual action required (chain doesn't support proxy or is disabled)
+    ManualActionRequired { reason: String, current_status: CollatorStatus },
     /// Error occurred during monitoring
     Error(String),
     /// Chain was skipped (not enabled or not valid for network)
@@ -105,25 +125,16 @@ impl CollatorMonitor {
             };
         }
 
-        // Check if chain supports proxy accounts (BridgeHub doesn't)
-        if !chain_supports_proxy(chain) {
-            return MonitorResult {
-                chain_name,
-                status: MonitorStatus::Skipped(
-                    "Chain does not support proxy accounts for collator registration".to_string()
-                ),
-            };
-        }
+        // Check if chain is explicitly disabled in config
+        let chain_enabled = self.config.chain_config(network, chain)
+            .map(|c| c.enabled)
+            .unwrap_or(true); // Default to enabled if not specified
 
-        // Check if chain is enabled in config
-        if let Some(chain_config) = self.config.chain_config(network, chain) {
-            if !chain_config.enabled {
-                return MonitorResult {
-                    chain_name,
-                    status: MonitorStatus::Skipped("Chain disabled in config".to_string()),
-                };
-            }
-        }
+        // Check if chain supports proxy accounts (BridgeHub doesn't)
+        let supports_proxy = chain_supports_proxy(chain);
+        
+        // Determine if this is a read-only check (no automatic actions)
+        let read_only = !supports_proxy || !chain_enabled;
 
         // Get RPC URL
         let rpc_url = self
@@ -135,10 +146,10 @@ impl CollatorMonitor {
         // Get collator address for this network
         let collator_address = self.config.collator_address(network);
 
-        info!("Monitoring {} for collator {}", chain_name, collator_address);
+        info!("Monitoring {} for collator {} (read_only: {})", chain_name, collator_address, read_only);
 
         match self
-            .monitor_chain_internal(network, chain, rpc_url, collator_address)
+            .monitor_chain_internal(network, chain, rpc_url, collator_address, read_only)
             .await
         {
             Ok(status) => MonitorResult { chain_name, status },
@@ -159,6 +170,7 @@ impl CollatorMonitor {
         chain: SystemChain,
         rpc_url: &str,
         collator_address: &str,
+        read_only: bool,
     ) -> Result<MonitorStatus> {
         // Connect to chain
         let client = ChainClient::connect(rpc_url, network, chain).await?;
@@ -174,8 +186,17 @@ impl CollatorMonitor {
         let reserve_amount = network.reserve_amount();
         let available_for_bond = free_balance.saturating_sub(reserve_amount);
         let candidacy_bond = client.get_candidacy_bond().await?;
+        
+        // Get current candidates to check competitive bond
+        let candidates = client.get_candidates().await?;
+        // Get minimum bond from candidates (only those with bond > 0, sorted ascending)
+        let lowest_candidate_bond = candidates
+            .iter()
+            .filter(|c| c.deposit > 0)
+            .map(|c| c.deposit)
+            .min();
 
-        match status {
+        match status.clone() {
             CollatorStatus::Invulnerable => {
                 info!(
                     "{} is an invulnerable collator on {}",
@@ -194,6 +215,35 @@ impl CollatorMonitor {
                 
                 // Check if we should increase the bond
                 if available_for_bond > current_bond {
+                    if read_only {
+                        let reason = if !chain_supports_proxy(chain) {
+                            "No proxy support - bond update required".to_string()
+                        } else {
+                            "Chain disabled - bond update required".to_string()
+                        };
+                        
+                        warn!(
+                            "Manual action needed on {}: could increase bond from {} to {}",
+                            client.chain_name(), current_bond, available_for_bond
+                        );
+                        
+                        let _ = self
+                            .slack
+                            .alert_manual_action_required(
+                                client.chain_name(),
+                                &collator_account.to_string(),
+                                &format!("Bond can be increased from {} to {}", 
+                                    format_balance(current_bond, network.decimals(), network.symbol()),
+                                    format_balance(available_for_bond, network.decimals(), network.symbol())),
+                            )
+                            .await;
+                        
+                        return Ok(MonitorStatus::ManualActionRequired {
+                            reason,
+                            current_status: status,
+                        });
+                    }
+                    
                     info!(
                         "Increasing bond from {} to {} on {}",
                         current_bond, available_for_bond, client.chain_name()
@@ -228,10 +278,102 @@ impl CollatorMonitor {
             }
             CollatorStatus::NotCollator => {
                 info!(
-                    "{} is NOT a collator on {}, attempting registration",
+                    "{} is NOT a collator on {}, checking if we can register",
                     collator_address,
                     client.chain_name()
                 );
+                
+                // First check: do we have enough for minimum candidacy bond?
+                if available_for_bond < candidacy_bond {
+                    warn!(
+                        "Cannot register on {}: available {} < minimum bond requirement {}",
+                        client.chain_name(),
+                        available_for_bond,
+                        candidacy_bond
+                    );
+
+                    let _ = self
+                        .slack
+                        .alert_insufficient_funds(
+                            client.chain_name(),
+                            &collator_account.to_string(),
+                            available_for_bond,
+                            candidacy_bond,
+                            network.symbol(),
+                            network.decimals(),
+                        )
+                        .await;
+
+                    return Ok(MonitorStatus::InsufficientFunds {
+                        available: available_for_bond,
+                        required: candidacy_bond,
+                    });
+                }
+                
+                // Second check: can we beat the lowest candidate?
+                // If there are existing candidates, we need to beat the lowest one
+                if let Some(lowest_bond) = lowest_candidate_bond {
+                    if available_for_bond <= lowest_bond {
+                        let needed = lowest_bond.saturating_sub(available_for_bond) + 1;
+                        warn!(
+                            "Cannot compete on {}: available {} <= lowest candidate bond {}. Need {} more.",
+                            client.chain_name(),
+                            available_for_bond,
+                            lowest_bond,
+                            needed
+                        );
+
+                        let _ = self
+                            .slack
+                            .alert_cannot_compete(
+                                client.chain_name(),
+                                &collator_account.to_string(),
+                                available_for_bond,
+                                lowest_bond,
+                                needed,
+                                network.symbol(),
+                                network.decimals(),
+                            )
+                            .await;
+
+                        return Ok(MonitorStatus::CannotCompete {
+                            available: available_for_bond,
+                            lowest_candidate: lowest_bond,
+                            needed,
+                        });
+                    }
+                }
+                
+                // We can compete! But check if read_only
+                if read_only {
+                    let reason = if !chain_supports_proxy(chain) {
+                        "No proxy support - registration required".to_string()
+                    } else {
+                        "Chain disabled - registration required".to_string()
+                    };
+                    
+                    warn!(
+                        "Manual action needed on {}: registration required",
+                        client.chain_name()
+                    );
+                    
+                    let _ = self
+                        .slack
+                        .alert_manual_action_required(
+                            client.chain_name(),
+                            &collator_account.to_string(),
+                            &format!("Registration required with bond {}", 
+                                format_balance(available_for_bond, network.decimals(), network.symbol())),
+                        )
+                        .await;
+                    
+                    return Ok(MonitorStatus::ManualActionRequired {
+                        reason,
+                        current_status: status,
+                    });
+                }
+                
+                // Try to register
                 self.attempt_registration(&client, &collator_account, network, available_for_bond, candidacy_bond)
                     .await
             }
@@ -249,32 +391,10 @@ impl CollatorMonitor {
         debug!("Candidacy bond: {}", candidacy_bond);
         debug!("Available for bond: {}", available_for_bond);
 
-        // Check if we have enough funds to register
-        if available_for_bond < candidacy_bond {
-            warn!(
-                "Cannot register on {}: available {} < bond requirement {}",
-                client.chain_name(),
-                available_for_bond,
-                candidacy_bond
-            );
-
-            let _ = self
-                .slack
-                .alert_insufficient_funds(
-                    client.chain_name(),
-                    &collator_account.to_string(),
-                    available_for_bond,
-                    candidacy_bond,
-                    network.symbol(),
-                    network.decimals(),
-                )
-                .await;
-
-            return Ok(MonitorStatus::InsufficientFunds {
-                available: available_for_bond,
-                required: candidacy_bond,
-            });
-        }
+        info!(
+            "Registering {} as candidate on {} with bond {}",
+            collator_account, client.chain_name(), available_for_bond
+        );
 
         // Register as candidate
         let tx_hash = client
