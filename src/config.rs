@@ -195,23 +195,54 @@ impl AppConfig {
             eprintln!("COLLATOR_PROXY_SEED not found in environment");
         }
 
-        // Build config from environment variables
-        // Using __ as separator for nested keys, and convert to lowercase
-        let config = config::Config::builder()
-            // Load from config.toml if present (try both locations)
+        // The config crate's Environment source has issues with underscores in field names.
+        // Let's build the config manually from environment variables instead.
+        let polkadot_address = std::env::var("COLLATOR_POLKADOT_COLLATOR_ADDRESS")
+            .map_err(|_| anyhow::anyhow!("COLLATOR_POLKADOT_COLLATOR_ADDRESS not set"))?;
+        let kusama_address = std::env::var("COLLATOR_KUSAMA_COLLATOR_ADDRESS")
+            .map_err(|_| anyhow::anyhow!("COLLATOR_KUSAMA_COLLATOR_ADDRESS not set"))?;
+        let proxy_seed = std::env::var("COLLATOR_PROXY_SEED")
+            .map_err(|_| anyhow::anyhow!("COLLATOR_PROXY_SEED not set"))?;
+        let slack_webhook = std::env::var("COLLATOR_SLACK_WEBHOOK_URL").ok();
+        let check_interval = std::env::var("COLLATOR_CHECK_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3600u64);
+
+        // Load chain configs from config.toml if present
+        let chains = Self::load_chain_configs()?;
+
+        Ok(Self {
+            polkadot_collator_address: polkadot_address,
+            kusama_collator_address: kusama_address,
+            proxy_seed,
+            slack_webhook_url: slack_webhook,
+            check_interval_secs: check_interval,
+            chains,
+        })
+    }
+
+    /// Load chain-specific configs from config.toml
+    fn load_chain_configs() -> anyhow::Result<HashMap<String, ChainConfig>> {
+        // Try to load from config files
+        let config_result = config::Config::builder()
             .add_source(config::File::with_name("config/config").required(false))
             .add_source(config::File::with_name("config").required(false))
-            // Override with environment variables (prefixed with COLLATOR_)
-            .add_source(
-                config::Environment::with_prefix("COLLATOR")
-                    .separator("__")
-                    .convert_case(config::Case::Lower)
-                    .try_parsing(true),
-            )
-            .build()?;
+            .build();
 
-        eprintln!("Config built successfully, deserializing...");
-        config.try_deserialize().map_err(Into::into)
+        match config_result {
+            Ok(config) => {
+                // Try to get the chains section
+                if let Ok(chains) = config.get::<HashMap<String, ChainConfig>>("chains") {
+                    return Ok(chains);
+                }
+            }
+            Err(e) => {
+                eprintln!("Note: Could not load config file: {}", e);
+            }
+        }
+
+        Ok(HashMap::new())
     }
 }
 
