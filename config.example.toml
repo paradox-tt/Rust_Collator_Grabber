@@ -27,18 +27,19 @@ check_interval_secs = 3600  # 1 hour
 # If not specified, default LuckyFriday RPC endpoints will be used
 # Format: [chains."network_chain"]
 #
-# NOTE: BridgeHub chains do NOT support proxy accounts for collator registration
-#       and are automatically skipped by the monitor.
+# NOTE: BridgeHub chains do NOT support proxy accounts for collator registration.
+#       They will still be checked for status, but actions will be flagged as
+#       "manual action required" instead of being performed automatically.
 
 # Polkadot chains (LuckyFriday endpoints)
 [chains.polkadot_assethub]
 rpc_url = "wss://rpc-asset-hub-polkadot.luckyfriday.io"
 enabled = true
 
-# BridgeHub does NOT support proxy accounts - skipped automatically
+# BridgeHub - status checked but no automatic actions (no proxy support)
 [chains.polkadot_bridgehub]
 rpc_url = "wss://rpc-bridge-hub-polkadot.luckyfriday.io"
-enabled = false
+enabled = true
 
 [chains.polkadot_collectives]
 rpc_url = "wss://rpc-collectives-polkadot.luckyfriday.io"
@@ -57,10 +58,10 @@ enabled = true
 rpc_url = "wss://rpc-asset-hub-kusama.luckyfriday.io"
 enabled = true
 
-# BridgeHub does NOT support proxy accounts - skipped automatically
+# BridgeHub - status checked but no automatic actions (no proxy support)
 [chains.kusama_bridgehub]
 rpc_url = "wss://rpc-bridge-hub-kusama.luckyfriday.io"
-enabled = false
+enabled = true
 
 [chains.kusama_coretime]
 rpc_url = "wss://rpc-coretime-kusama.luckyfriday.io"
