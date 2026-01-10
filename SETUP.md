@@ -30,7 +30,7 @@ Running as a dedicated non-root user improves security:
 
 ```bash
 # Create system user (no login shell, no home directory login)
-sudo useradd --system --shell /usr/sbin/nologin --create-home --home-dir /opt/collator-monitor collator-monitor
+sudo useradd --system --shell /usr/sbin/nologin --create-home --home-dir /home/collator-registrar collator-monitor
 ```
 
 ### 2. Build the application
@@ -45,15 +45,15 @@ cd collator-monitor
 cargo build --release
 
 # Copy binary to installation directory
-sudo mkdir -p /opt/collator-monitor/bin
-sudo cp target/release/collator-monitor /opt/collator-monitor/bin/
-sudo chown -R collator-monitor:collator-monitor /opt/collator-monitor
+sudo mkdir -p /home/collator-registrar/bin
+sudo cp target/release/collator-monitor /home/collator-registrar/bin/
+sudo chown -R collator-monitor:collator-monitor /home/collator-registrar
 ```
 
 ### 3. Set permissions on binary
 
 ```bash
-sudo chmod 750 /opt/collator-monitor/bin/collator-monitor
+sudo chmod 750 /home/collator-registrar/bin/collator-monitor
 ```
 
 ---
@@ -66,18 +66,18 @@ The `.env` file contains sensitive credentials (proxy seed phrase). We'll protec
 
 ```bash
 # Create config directory with restricted access
-sudo mkdir -p /opt/collator-monitor/config
-sudo chown collator-monitor:collator-monitor /opt/collator-monitor/config
-sudo chmod 700 /opt/collator-monitor/config
+sudo mkdir -p /home/collator-registrar/config
+sudo chown collator-registrar:collator-registrar /home/collator-registrar/config
+sudo chmod 700 /home/collator-registrar/config
 
 # Create the .env file
-sudo -u collator-monitor nano /opt/collator-monitor/config/.env
+sudo -u collator-registrar nano /home/collator-registrar/config/.env
 ```
 
 ### 2. Add your configuration
 
 ```bash
-# /opt/collator-monitor/config/.env
+# /home/collator-registrar/config/.env
 
 # Collator addresses (public - these appear on-chain anyway)
 COLLATOR_POLKADOT_COLLATOR_ADDRESS=1YourPolkadotCollatorAddress...
@@ -99,22 +99,22 @@ COLLATOR_CHECK_INTERVAL_SECS=3600
 
 ```bash
 # Only the collator-monitor user can read this file
-sudo chmod 600 /opt/collator-monitor/config/.env
-sudo chown collator-monitor:collator-monitor /opt/collator-monitor/config/.env
+sudo chmod 600 /home/collator-registrar/config/.env
+sudo chown collator-registrar:collator-registrar /home/collator-registrar/config/.env
 
 # Verify permissions
-ls -la /opt/collator-monitor/config/.env
+ls -la /home/collator-registrar/config/.env
 # Should show: -rw------- 1 collator-monitor collator-monitor
 ```
 
 ### 4. (Optional) Create config.toml for chain-specific settings
 
 ```bash
-sudo -u collator-monitor nano /opt/collator-monitor/config/config.toml
+sudo -u collator-monitor nano /home/collator-registrar/config/config.toml
 ```
 
 ```toml
-# /opt/collator-monitor/config/config.toml
+# /home/collator-registrar/config/config.toml
 # Chain-specific overrides (optional)
 
 [chains.polkadot_bridgehub]
@@ -147,13 +147,13 @@ User=collator-monitor
 Group=collator-monitor
 
 # Working directory
-WorkingDirectory=/opt/collator-monitor
+WorkingDirectory=/home/collator-registrar
 
 # Environment file with secrets
-EnvironmentFile=/opt/collator-monitor/config/.env
+EnvironmentFile=/home/collator-registrar/config/.env
 
 # Run in watch mode with 1-hour intervals
-ExecStart=/opt/collator-monitor/bin/collator-monitor watch --interval 3600
+ExecStart=/home/collator-registrar/bin/collator-monitor watch --interval 3600
 
 # Restart policy
 Restart=always
@@ -180,7 +180,7 @@ PrivateNetwork=false
 
 # Allow reading config directory
 ReadOnlyPaths=/
-ReadWritePaths=/opt/collator-monitor
+ReadWritePaths=/home/collator-registrar
 
 # Limit resources (adjust as needed)
 MemoryMax=512M
@@ -238,10 +238,10 @@ sudo systemctl disable collator-monitor
 
 ```bash
 # Run as the service user with the environment file
-sudo -u collator-monitor bash -c 'source /opt/collator-monitor/config/.env && /opt/collator-monitor/bin/collator-monitor check'
+sudo -u collator-monitor bash -c 'source /home/collator-registrar/config/.env && /home/collator-registrar/bin/collator-monitor check'
 
 # Or just check status (read-only)
-sudo -u collator-monitor bash -c 'source /opt/collator-monitor/config/.env && /opt/collator-monitor/bin/collator-monitor status'
+sudo -u collator-monitor bash -c 'source /home/collator-registrar/config/.env && /home/collator-registrar/bin/collator-monitor status'
 ```
 
 ---
@@ -298,7 +298,7 @@ The proxy seed phrase is the most sensitive piece of configuration. Mitigate ris
 ### 2. File Permissions Summary
 
 ```
-/opt/collator-monitor/
+/home/collator-registrar/
 ├── bin/
 │   └── collator-monitor     # 750 collator-monitor:collator-monitor
 ├── config/
@@ -330,7 +330,7 @@ If you suspect the proxy seed is compromised:
 
 ```bash
 # Check who has accessed the config
-sudo ausearch -f /opt/collator-monitor/config/.env
+sudo ausearch -f /home/collator-registrar/config/.env
 
 # (Requires auditd to be configured)
 ```
@@ -356,12 +356,12 @@ sudo journalctl -u collator-monitor -n 50 --no-pager
 
 ```bash
 # Verify file ownership
-ls -la /opt/collator-monitor/
-ls -la /opt/collator-monitor/config/
+ls -la /home/collator-registrar/
+ls -la /home/collator-registrar/config/
 
 # Fix permissions if needed
-sudo chown -R collator-monitor:collator-monitor /opt/collator-monitor
-sudo chmod 600 /opt/collator-monitor/config/.env
+sudo chown -R collator-monitor:collator-monitor /home/collator-registrar
+sudo chmod 600 /home/collator-registrar/config/.env
 ```
 
 ### Connection errors
@@ -415,8 +415,8 @@ cd /path/to/source
 cargo build --release
 
 # Replace binary
-sudo cp target/release/collator-monitor /opt/collator-monitor/bin/
-sudo chown collator-monitor:collator-monitor /opt/collator-monitor/bin/collator-monitor
+sudo cp target/release/collator-monitor /home/collator-registrar/bin/
+sudo chown collator-monitor:collator-monitor /home/collator-registrar/bin/collator-monitor
 
 # Start the service
 sudo systemctl start collator-monitor

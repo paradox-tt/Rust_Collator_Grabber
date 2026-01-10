@@ -152,16 +152,37 @@ impl AppConfig {
 
     /// Load configuration from environment and config file
     pub fn load() -> anyhow::Result<Self> {
-        // Load .env file if present
-        let _ = dotenvy::dotenv();
+        // Load .env file if present - try multiple locations
+        // 1. Explicit path from ENV_FILE environment variable
+        // 2. Config subdirectory (config/.env) - for service deployment
+        // 3. Current directory (.env) - fallback
+        if let Ok(env_path) = std::env::var("ENV_FILE") {
+            let _ = dotenvy::from_path(&env_path);
+        } else {
+            // Try config/.env first (for service deployment)
+            let config_env = std::path::Path::new("config/.env");
+            if config_env.exists() {
+                let _ = dotenvy::from_path(config_env);
+            } else {
+                // Fall back to .env in current directory
+                let _ = dotenvy::dotenv();
+            }
+        }
 
+        // Build config from environment variables
+        // We use __ (double underscore) as separator for nested keys
+        // This means:
+        //   COLLATOR_POLKADOT_COLLATOR_ADDRESS -> polkadot_collator_address (flat)
+        //   COLLATOR_CHAINS__POLKADOT_ASSETHUB__RPC_URL -> chains.polkadot_assethub.rpc_url (nested)
         let config = config::Config::builder()
-            // Load from config.toml if present
+            // Load from config.toml if present (try both locations)
+            .add_source(config::File::with_name("config/config").required(false))
             .add_source(config::File::with_name("config").required(false))
             // Override with environment variables (prefixed with COLLATOR_)
+            // Using __ as separator so single _ stays as part of the key name
             .add_source(
                 config::Environment::with_prefix("COLLATOR")
-                    .separator("_")
+                    .separator("__")
                     .try_parsing(true),
             )
             .build()?;
