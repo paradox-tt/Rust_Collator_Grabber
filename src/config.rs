@@ -157,36 +157,60 @@ impl AppConfig {
         // 2. Config subdirectory (config/.env) - for service deployment
         // 3. Current directory (.env) - fallback
         if let Ok(env_path) = std::env::var("ENV_FILE") {
-            let _ = dotenvy::from_path(&env_path);
+            eprintln!("Loading .env from ENV_FILE: {}", env_path);
+            match dotenvy::from_path(&env_path) {
+                Ok(_) => eprintln!("Successfully loaded {}", env_path),
+                Err(e) => eprintln!("Failed to load {}: {}", env_path, e),
+            }
         } else {
             // Try config/.env first (for service deployment)
             let config_env = std::path::Path::new("config/.env");
             if config_env.exists() {
-                let _ = dotenvy::from_path(config_env);
+                eprintln!("Loading .env from config/.env");
+                match dotenvy::from_path(config_env) {
+                    Ok(_) => eprintln!("Successfully loaded config/.env"),
+                    Err(e) => eprintln!("Failed to load config/.env: {}", e),
+                }
             } else {
                 // Fall back to .env in current directory
-                let _ = dotenvy::dotenv();
+                eprintln!("Looking for .env in current directory");
+                match dotenvy::dotenv() {
+                    Ok(path) => eprintln!("Successfully loaded {:?}", path),
+                    Err(e) => eprintln!("No .env file found: {}", e),
+                }
             }
         }
 
+        // Debug: print relevant env vars (redacted)
+        eprintln!("Checking environment variables...");
+        if let Ok(val) = std::env::var("COLLATOR_POLKADOT_COLLATOR_ADDRESS") {
+            eprintln!("Found COLLATOR_POLKADOT_COLLATOR_ADDRESS: {}...", &val[..std::cmp::min(10, val.len())]);
+        } else {
+            eprintln!("COLLATOR_POLKADOT_COLLATOR_ADDRESS not found in environment");
+        }
+        
+        if std::env::var("COLLATOR_PROXY_SEED").is_ok() {
+            eprintln!("Found COLLATOR_PROXY_SEED: [REDACTED]");
+        } else {
+            eprintln!("COLLATOR_PROXY_SEED not found in environment");
+        }
+
         // Build config from environment variables
-        // We use __ (double underscore) as separator for nested keys
-        // This means:
-        //   COLLATOR_POLKADOT_COLLATOR_ADDRESS -> polkadot_collator_address (flat)
-        //   COLLATOR_CHAINS__POLKADOT_ASSETHUB__RPC_URL -> chains.polkadot_assethub.rpc_url (nested)
+        // Using __ as separator for nested keys, and convert to lowercase
         let config = config::Config::builder()
             // Load from config.toml if present (try both locations)
             .add_source(config::File::with_name("config/config").required(false))
             .add_source(config::File::with_name("config").required(false))
             // Override with environment variables (prefixed with COLLATOR_)
-            // Using __ as separator so single _ stays as part of the key name
             .add_source(
                 config::Environment::with_prefix("COLLATOR")
                     .separator("__")
+                    .convert_case(config::Case::Lower)
                     .try_parsing(true),
             )
             .build()?;
 
+        eprintln!("Config built successfully, deserializing...");
         config.try_deserialize().map_err(Into::into)
     }
 }
