@@ -1,12 +1,14 @@
 //! Monitoring logic for collator status and automatic re-registration.
 
+use std::sync::Arc;
 use anyhow::{Context, Result};
 use subxt::utils::AccountId32;
 use tracing::{debug, error, info, warn};
 
+use crate::block_tracker::BlockTracker;
 use crate::chain_client::{ChainClient, CollatorStatus};
 use crate::config::{chain_supports_proxy, default_rpc_url, AppConfig, Network, SystemChain};
-use crate::slack::SlackNotifier;
+use crate::slack::{SlackNotifier, ChainSlotInfo};
 
 /// Format a balance with proper decimal places and symbol
 fn format_balance(balance: u128, decimals: u32, symbol: &str) -> String {
@@ -56,22 +58,42 @@ pub struct CollatorMonitor {
     config: AppConfig,
     proxy_signer: subxt_signer::sr25519::Keypair,
     slack: SlackNotifier,
+    block_tracker: Arc<BlockTracker>,
 }
 
 impl CollatorMonitor {
     /// Create a new collator monitor
-    pub fn new(config: AppConfig) -> Result<Self> {
+    pub fn new(config: AppConfig, block_tracker: Arc<BlockTracker>) -> Result<Self> {
         // Parse the proxy seed to create a signer
         let proxy_signer = parse_seed(&config.proxy_seed)
             .context("Failed to parse proxy seed")?;
 
-        let slack = SlackNotifier::new(config.slack_webhook_url.clone());
+        let slack = SlackNotifier::new(
+            config.slack_webhook_url.clone(),
+            config.slack_user_ids.clone(),
+        );
 
         Ok(Self {
             config,
             proxy_signer,
             slack,
+            block_tracker,
         })
+    }
+
+    /// Get reference to slack notifier (for summary sending)
+    pub fn slack(&self) -> &SlackNotifier {
+        &self.slack
+    }
+
+    /// Get reference to block tracker
+    pub fn block_tracker(&self) -> &Arc<BlockTracker> {
+        &self.block_tracker
+    }
+
+    /// Get the summary interval from config
+    pub fn summary_interval_secs(&self) -> u64 {
+        self.config.summary_interval_secs
     }
 
     /// Run monitoring for all configured chains
@@ -152,7 +174,27 @@ impl CollatorMonitor {
             .monitor_chain_internal(network, chain, rpc_url, collator_address, read_only)
             .await
         {
-            Ok(status) => MonitorResult { chain_name, status },
+            Ok(status) => {
+                // Check if this chain had an outstanding issue that's now resolved
+                let had_issue = self.slack.has_outstanding_issue(&chain_name);
+                let was_manual = self.slack.was_manual_action_required(&chain_name);
+                
+                // If chain is now healthy (AlreadyCollator) and had an issue, notify resolution
+                if had_issue {
+                    if let MonitorStatus::AlreadyCollator(ref collator_status) = status {
+                        let status_str = match collator_status {
+                            CollatorStatus::Invulnerable => "Invulnerable".to_string(),
+                            CollatorStatus::Candidate { deposit } => {
+                                format!("Candidate (bond: {})", deposit)
+                            }
+                            CollatorStatus::NotCollator => "Not a collator".to_string(),
+                        };
+                        let _ = self.slack.notify_issue_resolved(&chain_name, was_manual, &status_str).await;
+                    }
+                }
+                
+                MonitorResult { chain_name, status }
+            }
             Err(e) => {
                 error!("Error monitoring {}: {}", chain_name, e);
                 let _ = self.slack.notify_error(&chain_name, &e.to_string()).await;
@@ -162,6 +204,132 @@ impl CollatorMonitor {
                 }
             }
         }
+    }
+
+    /// Collect slot information for all chains (for summary)
+    pub async fn collect_slot_info(&self) -> Vec<ChainSlotInfo> {
+        let mut slots = Vec::new();
+
+        let polkadot_chains = [
+            SystemChain::AssetHub,
+            SystemChain::BridgeHub,
+            SystemChain::Collectives,
+            SystemChain::Coretime,
+            SystemChain::People,
+        ];
+
+        let kusama_chains = [
+            SystemChain::AssetHub,
+            SystemChain::BridgeHub,
+            SystemChain::Coretime,
+            SystemChain::People,
+            SystemChain::Encointer,
+        ];
+
+        // Collect Polkadot chain slots
+        for chain in polkadot_chains {
+            if let Some(info) = self.get_chain_slot_info(Network::Polkadot, chain).await {
+                slots.push(info);
+            }
+        }
+
+        // Collect Kusama chain slots
+        for chain in kusama_chains {
+            if let Some(info) = self.get_chain_slot_info(Network::Kusama, chain).await {
+                slots.push(info);
+            }
+        }
+
+        slots
+    }
+
+    /// Get slot info for a single chain
+    async fn get_chain_slot_info(&self, network: Network, chain: SystemChain) -> Option<ChainSlotInfo> {
+        if !chain.valid_networks().contains(&network) {
+            return None;
+        }
+
+        let chain_name = chain.display_name(network);
+        let rpc_url = self
+            .config
+            .chain_config(network, chain)
+            .map(|c| c.rpc_url.as_str())
+            .unwrap_or_else(|| default_rpc_url(network, chain));
+
+        let collator_address = self.config.collator_address(network);
+
+        let client = match ChainClient::connect(rpc_url, network, chain).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to connect to {} for slot info: {}", chain_name, e);
+                return None;
+            }
+        };
+
+        let collator_account = match client.parse_address(collator_address) {
+            Ok(a) => a,
+            Err(_) => return None,
+        };
+
+        let status = match client.get_collator_status(&collator_account).await {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
+
+        let candidates = client.get_candidates().await.unwrap_or_default();
+        let max_candidates = client.get_desired_candidates().await.ok();
+
+        let (is_invulnerable, is_candidate, position, your_bond) = match &status {
+            CollatorStatus::Invulnerable => (true, false, None, None),
+            CollatorStatus::Candidate { deposit } => {
+                // Find position in candidate list (sorted by bond descending, so position 1 = highest bond)
+                let mut sorted_candidates: Vec<_> = candidates.iter()
+                    .filter(|c| c.deposit > 0)
+                    .collect();
+                sorted_candidates.sort_by(|a, b| b.deposit.cmp(&a.deposit));
+                
+                let pos = sorted_candidates.iter()
+                    .position(|c| c.who == collator_account)
+                    .map(|p| p + 1); // 1-indexed
+                
+                (false, true, pos, Some(*deposit))
+            }
+            CollatorStatus::NotCollator => (false, false, None, None),
+        };
+
+        // Calculate distance from last (lowest bond)
+        let lowest_bond = candidates.iter()
+            .filter(|c| c.deposit > 0)
+            .map(|c| c.deposit)
+            .min();
+        
+        let distance_from_last = match (your_bond, lowest_bond) {
+            (Some(your), Some(lowest)) if your > lowest => Some(your - lowest),
+            _ => None,
+        };
+
+        // Get last authored block time from the block tracker (if we're a collator)
+        let last_block_time = if is_invulnerable || is_candidate {
+            self.block_tracker.get_last_block(&chain_name).await
+                .and_then(|info| info.time_ago)
+        } else {
+            None
+        };
+
+        Some(ChainSlotInfo {
+            chain_name,
+            is_invulnerable,
+            is_candidate,
+            position,
+            max_candidates,
+            total_candidates: candidates.len(),
+            your_bond,
+            lowest_bond,
+            distance_from_last,
+            last_block_time,
+            token_symbol: network.symbol().to_string(),
+            decimals: network.decimals(),
+        })
     }
 
     async fn monitor_chain_internal(

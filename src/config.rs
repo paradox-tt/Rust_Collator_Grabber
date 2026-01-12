@@ -107,9 +107,17 @@ pub struct AppConfig {
     /// Slack webhook URL for notifications
     pub slack_webhook_url: Option<String>,
 
+    /// Slack user IDs to ping for actionable events (comma-separated)
+    /// Format: U08CUCTA3R7,U12345ABCD
+    pub slack_user_ids: Vec<String>,
+
     /// Check interval in seconds (for continuous monitoring mode)
     #[serde(default = "default_check_interval")]
     pub check_interval_secs: u64,
+
+    /// Summary interval in seconds (for periodic status summary)
+    #[serde(default = "default_summary_interval")]
+    pub summary_interval_secs: u64,
 
     /// Chain-specific configurations
     /// Key format: "network_chain" e.g., "polkadot_assethub"
@@ -119,6 +127,10 @@ pub struct AppConfig {
 
 fn default_check_interval() -> u64 {
     3600 // 1 hour
+}
+
+fn default_summary_interval() -> u64 {
+    21600 // 6 hours
 }
 
 impl AppConfig {
@@ -157,57 +169,38 @@ impl AppConfig {
         // 2. Config subdirectory (config/.env) - for service deployment
         // 3. Current directory (.env) - fallback
         if let Ok(env_path) = std::env::var("ENV_FILE") {
-            eprintln!("Loading .env from ENV_FILE: {}", env_path);
-            match dotenvy::from_path(&env_path) {
-                Ok(_) => eprintln!("Successfully loaded {}", env_path),
-                Err(e) => eprintln!("Failed to load {}: {}", env_path, e),
-            }
+            let _ = dotenvy::from_path(&env_path);
         } else {
-            // Try config/.env first (for service deployment)
             let config_env = std::path::Path::new("config/.env");
             if config_env.exists() {
-                eprintln!("Loading .env from config/.env");
-                match dotenvy::from_path(config_env) {
-                    Ok(_) => eprintln!("Successfully loaded config/.env"),
-                    Err(e) => eprintln!("Failed to load config/.env: {}", e),
-                }
+                let _ = dotenvy::from_path(config_env);
             } else {
-                // Fall back to .env in current directory
-                eprintln!("Looking for .env in current directory");
-                match dotenvy::dotenv() {
-                    Ok(path) => eprintln!("Successfully loaded {:?}", path),
-                    Err(e) => eprintln!("No .env file found: {}", e),
-                }
+                let _ = dotenvy::dotenv();
             }
         }
 
-        // Debug: print relevant env vars (redacted)
-        eprintln!("Checking environment variables...");
-        if let Ok(val) = std::env::var("COLLATOR_POLKADOT_COLLATOR_ADDRESS") {
-            eprintln!("Found COLLATOR_POLKADOT_COLLATOR_ADDRESS: {}...", &val[..std::cmp::min(10, val.len())]);
-        } else {
-            eprintln!("COLLATOR_POLKADOT_COLLATOR_ADDRESS not found in environment");
-        }
-        
-        if std::env::var("COLLATOR_PROXY_SEED").is_ok() {
-            eprintln!("Found COLLATOR_PROXY_SEED: [REDACTED]");
-        } else {
-            eprintln!("COLLATOR_PROXY_SEED not found in environment");
-        }
-
-        // The config crate's Environment source has issues with underscores in field names.
-        // Let's build the config manually from environment variables instead.
+        // Read required environment variables
         let polkadot_address = std::env::var("COLLATOR_POLKADOT_COLLATOR_ADDRESS")
             .map_err(|_| anyhow::anyhow!("COLLATOR_POLKADOT_COLLATOR_ADDRESS not set"))?;
         let kusama_address = std::env::var("COLLATOR_KUSAMA_COLLATOR_ADDRESS")
             .map_err(|_| anyhow::anyhow!("COLLATOR_KUSAMA_COLLATOR_ADDRESS not set"))?;
         let proxy_seed = std::env::var("COLLATOR_PROXY_SEED")
             .map_err(|_| anyhow::anyhow!("COLLATOR_PROXY_SEED not set"))?;
+        
+        // Read optional environment variables
         let slack_webhook = std::env::var("COLLATOR_SLACK_WEBHOOK_URL").ok();
+        let slack_user_ids = std::env::var("COLLATOR_SLACK_USER_IDS")
+            .ok()
+            .map(|s| s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect())
+            .unwrap_or_default();
         let check_interval = std::env::var("COLLATOR_CHECK_INTERVAL_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3600u64);
+        let summary_interval = std::env::var("COLLATOR_SUMMARY_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(21600u64); // 6 hours
 
         // Load chain configs from config.toml if present
         let chains = Self::load_chain_configs()?;
@@ -217,7 +210,9 @@ impl AppConfig {
             kusama_collator_address: kusama_address,
             proxy_seed,
             slack_webhook_url: slack_webhook,
+            slack_user_ids,
             check_interval_secs: check_interval,
+            summary_interval_secs: summary_interval,
             chains,
         })
     }
@@ -230,15 +225,9 @@ impl AppConfig {
             .add_source(config::File::with_name("config").required(false))
             .build();
 
-        match config_result {
-            Ok(config) => {
-                // Try to get the chains section
-                if let Ok(chains) = config.get::<HashMap<String, ChainConfig>>("chains") {
-                    return Ok(chains);
-                }
-            }
-            Err(e) => {
-                eprintln!("Note: Could not load config file: {}", e);
+        if let Ok(config) = config_result {
+            if let Ok(chains) = config.get::<HashMap<String, ChainConfig>>("chains") {
+                return Ok(chains);
             }
         }
 

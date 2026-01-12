@@ -4,17 +4,20 @@
 //! and automatically re-registers as a candidate if the collator falls out of the
 //! candidate list or invulnerables list.
 
+mod block_tracker;
 mod chain_client;
 mod config;
 mod error;
 mod monitor;
 mod slack;
 
+use std::sync::Arc;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use crate::block_tracker::BlockTracker;
 use crate::config::AppConfig;
 use crate::monitor::{CollatorMonitor, MonitorStatus};
 
@@ -90,7 +93,9 @@ async fn main() -> Result<()> {
 async fn run_check(config: AppConfig) -> Result<()> {
     info!("Running single check across all chains");
 
-    let monitor = CollatorMonitor::new(config)?;
+    // For single check, we don't use background block tracker
+    let block_tracker = Arc::new(BlockTracker::new());
+    let monitor = CollatorMonitor::new(config, block_tracker)?;
     let results = monitor.monitor_all_chains().await;
 
     print_results(&results);
@@ -109,20 +114,53 @@ async fn run_check(config: AppConfig) -> Result<()> {
 }
 
 async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
+    let summary_interval_secs = config.summary_interval_secs;
+    
     info!(
-        "Starting continuous monitoring with {} second interval",
-        interval_secs
+        "Starting continuous monitoring with {} second interval, summary every {} seconds",
+        interval_secs, summary_interval_secs
     );
 
-    let monitor = CollatorMonitor::new(config)?;
+    // Start background block trackers
+    let block_tracker = Arc::new(BlockTracker::new());
+    let tracker_handles = block_tracker.clone().start_tracking(config.clone());
+    
+    // Give trackers a moment to initialize
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+    let monitor = CollatorMonitor::new(config, block_tracker.clone())?;
+    
+    let mut last_summary = std::time::Instant::now();
+    // Send initial summary
+    info!("Sending initial status summary");
+    let slots = monitor.collect_slot_info().await;
+    let _ = monitor.slack().send_status_summary(&slots).await;
 
     loop {
         info!("Running scheduled check");
         let results = monitor.monitor_all_chains().await;
         print_results(&results);
 
+        // Check if it's time to send a summary
+        if last_summary.elapsed().as_secs() >= summary_interval_secs {
+            info!("Sending periodic status summary");
+            let slots = monitor.collect_slot_info().await;
+            let _ = monitor.slack().send_status_summary(&slots).await;
+            last_summary = std::time::Instant::now();
+        }
+
         info!("Next check in {} seconds", interval_secs);
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+    }
+    
+    // Cleanup (unreachable in normal operation, but good practice)
+    #[allow(unreachable_code)]
+    {
+        block_tracker.shutdown().await;
+        for handle in tracker_handles {
+            let _ = handle.await;
+        }
+        Ok(())
     }
 }
 
