@@ -225,7 +225,7 @@ sudo systemctl start collator-monitor
 ```dockerfile
 FROM rust:1.75 as builder
 WORKDIR /app
-COPY ../../Downloads/collator-monitor/collator-monitor .
+COPY . .
 RUN cargo build --release
 
 FROM debian:bookworm-slim

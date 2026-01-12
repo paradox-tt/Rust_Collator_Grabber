@@ -109,17 +109,33 @@ async fn run_check(config: AppConfig) -> Result<()> {
 }
 
 async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
+    let summary_interval_secs = config.summary_interval_secs;
+    
     info!(
-        "Starting continuous monitoring with {} second interval",
-        interval_secs
+        "Starting continuous monitoring with {} second interval, summary every {} seconds",
+        interval_secs, summary_interval_secs
     );
 
     let monitor = CollatorMonitor::new(config)?;
+    
+    let mut last_summary = std::time::Instant::now();
+    // Send initial summary
+    info!("Sending initial status summary");
+    let slots = monitor.collect_slot_info().await;
+    let _ = monitor.slack().send_status_summary(&slots).await;
 
     loop {
         info!("Running scheduled check");
         let results = monitor.monitor_all_chains().await;
         print_results(&results);
+
+        // Check if it's time to send a summary
+        if last_summary.elapsed().as_secs() >= summary_interval_secs {
+            info!("Sending periodic status summary");
+            let slots = monitor.collect_slot_info().await;
+            let _ = monitor.slack().send_status_summary(&slots).await;
+            last_summary = std::time::Instant::now();
+        }
 
         info!("Next check in {} seconds", interval_secs);
         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
