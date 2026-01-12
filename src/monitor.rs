@@ -311,7 +311,7 @@ impl CollatorMonitor {
         // Get last authored block time from the block tracker (if we're a collator)
         let last_block_time = if is_invulnerable || is_candidate {
             self.block_tracker.get_last_block(&chain_name).await
-                .and_then(|info| info.time_ago)
+                .and_then(|info| info.time_since_last_block())
         } else {
             None
         };

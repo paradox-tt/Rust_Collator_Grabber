@@ -1,6 +1,6 @@
 //! Background block tracker for monitoring last authored blocks per chain.
 //!
-//! This module runs background tasks that monitor each chain and track when
+//! This module subscribes to new blocks on each chain and tracks when
 //! the collator last authored a block.
 
 use std::collections::HashMap;
@@ -8,28 +8,38 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+use subxt::{OnlineClient, PolkadotConfig};
+use subxt::utils::AccountId32;
+use futures::StreamExt;
 
-use crate::chain_client::ChainClient;
 use crate::config::{default_rpc_url, AppConfig, Network, SystemChain};
 
 /// Tracks last authored block times for all chains
 #[derive(Debug, Clone)]
 pub struct LastBlockInfo {
-    /// Time since the collator last authored a block (if known)
-    pub time_ago: Option<Duration>,
-    /// When this information was last updated
-    pub last_updated: Instant,
-    /// Whether the tracker is currently running for this chain
-    pub is_tracking: bool,
+    /// When the collator last authored a block (None if never seen)
+    pub last_authored: Option<Instant>,
+    /// When this tracker started (to know if "never seen" is meaningful)
+    pub tracking_since: Instant,
+    /// Whether the tracker is currently connected
+    pub is_connected: bool,
+    /// Last error message if any
+    pub last_error: Option<String>,
 }
 
-impl Default for LastBlockInfo {
-    fn default() -> Self {
+impl LastBlockInfo {
+    fn new() -> Self {
         Self {
-            time_ago: None,
-            last_updated: Instant::now(),
-            is_tracking: false,
+            last_authored: None,
+            tracking_since: Instant::now(),
+            is_connected: false,
+            last_error: None,
         }
+    }
+    
+    /// Get time since last authored block
+    pub fn time_since_last_block(&self) -> Option<Duration> {
+        self.last_authored.map(|t| t.elapsed())
     }
 }
 
@@ -56,28 +66,31 @@ impl BlockTracker {
         data.get(chain_name).cloned()
     }
 
-    /// Get all chain names being tracked
-    pub async fn get_tracked_chains(&self) -> Vec<String> {
-        let data = self.data.read().await;
-        data.keys().cloned().collect()
-    }
-
-    /// Update the last block info for a chain
-    async fn update_chain(&self, chain_name: &str, time_ago: Option<Duration>) {
-        let mut data = self.data.write().await;
-        data.insert(chain_name.to_string(), LastBlockInfo {
-            time_ago,
-            last_updated: Instant::now(),
-            is_tracking: true,
-        });
-    }
-
-    /// Mark a chain as having tracking issues
-    async fn mark_tracking_error(&self, chain_name: &str) {
+    /// Record that the collator authored a block
+    async fn record_authored_block(&self, chain_name: &str) {
         let mut data = self.data.write().await;
         if let Some(info) = data.get_mut(chain_name) {
-            info.last_updated = Instant::now();
-            // Keep the old time_ago value, just update the timestamp
+            info.last_authored = Some(Instant::now());
+            info.is_connected = true;
+            info.last_error = None;
+        }
+    }
+
+    /// Mark chain as connected (receiving blocks but not authoring)
+    async fn mark_connected(&self, chain_name: &str) {
+        let mut data = self.data.write().await;
+        if let Some(info) = data.get_mut(chain_name) {
+            info.is_connected = true;
+            info.last_error = None;
+        }
+    }
+
+    /// Mark chain as disconnected with error
+    async fn mark_disconnected(&self, chain_name: &str, error: String) {
+        let mut data = self.data.write().await;
+        if let Some(info) = data.get_mut(chain_name) {
+            info.is_connected = false;
+            info.last_error = Some(error);
         }
     }
 
@@ -118,22 +131,26 @@ impl BlockTracker {
 
         // Start Polkadot chain trackers
         for chain in polkadot_chains {
-            let handle = self.clone().spawn_chain_tracker(
-                Network::Polkadot,
-                chain,
-                config.clone(),
-            );
-            handles.push(handle);
+            if chain.valid_networks().contains(&Network::Polkadot) {
+                let handle = self.clone().spawn_chain_tracker(
+                    Network::Polkadot,
+                    chain,
+                    config.clone(),
+                );
+                handles.push(handle);
+            }
         }
 
         // Start Kusama chain trackers
         for chain in kusama_chains {
-            let handle = self.clone().spawn_chain_tracker(
-                Network::Kusama,
-                chain,
-                config.clone(),
-            );
-            handles.push(handle);
+            if chain.valid_networks().contains(&Network::Kusama) {
+                let handle = self.clone().spawn_chain_tracker(
+                    Network::Kusama,
+                    chain,
+                    config.clone(),
+                );
+                handles.push(handle);
+            }
         }
 
         info!("Started {} background block trackers", handles.len());
@@ -159,10 +176,6 @@ impl BlockTracker {
         chain: SystemChain,
         config: AppConfig,
     ) {
-        if !chain.valid_networks().contains(&network) {
-            return;
-        }
-
         let chain_name = chain.display_name(network);
         let collator_address = config.collator_address(network);
         let rpc_url = config
@@ -170,54 +183,122 @@ impl BlockTracker {
             .map(|c| c.rpc_url.clone())
             .unwrap_or_else(|| default_rpc_url(network, chain).to_string());
 
-        info!("Starting block tracker for {}", chain_name);
+        info!("Starting block subscription for {}", chain_name);
 
         // Initialize tracking entry
         {
             let mut data = self.data.write().await;
-            data.insert(chain_name.clone(), LastBlockInfo {
-                time_ago: None,
-                last_updated: Instant::now(),
-                is_tracking: true,
-            });
+            data.insert(chain_name.clone(), LastBlockInfo::new());
         }
 
-        // Main tracking loop - check every 30 seconds
-        let check_interval = Duration::from_secs(30);
-        
+        // Reconnection loop
         loop {
             if self.is_shutdown().await {
                 info!("Block tracker for {} shutting down", chain_name);
                 break;
             }
 
-            match self.check_last_block(&chain_name, &rpc_url, network, chain, collator_address).await {
-                Ok(time_ago) => {
-                    self.update_chain(&chain_name, time_ago).await;
+            match self.subscribe_to_blocks(&chain_name, &rpc_url, collator_address).await {
+                Ok(()) => {
+                    // Subscription ended normally (shutdown)
+                    break;
                 }
                 Err(e) => {
-                    debug!("Error checking last block for {}: {}", chain_name, e);
-                    self.mark_tracking_error(&chain_name).await;
+                    warn!("Block subscription for {} failed: {}. Reconnecting in 30s...", chain_name, e);
+                    self.mark_disconnected(&chain_name, e.to_string()).await;
+                    tokio::time::sleep(Duration::from_secs(30)).await;
                 }
             }
-
-            tokio::time::sleep(check_interval).await;
         }
     }
 
-    /// Check the last authored block for a chain
-    async fn check_last_block(
+    /// Subscribe to new blocks and track authorship
+    async fn subscribe_to_blocks(
         &self,
         chain_name: &str,
         rpc_url: &str,
-        network: Network,
-        chain: SystemChain,
         collator_address: &str,
-    ) -> anyhow::Result<Option<Duration>> {
-        let client = ChainClient::connect(rpc_url, network, chain).await?;
-        let collator_account = client.parse_address(collator_address)?;
+    ) -> anyhow::Result<()> {
+        // Connect to the chain
+        let api = OnlineClient::<PolkadotConfig>::from_url(rpc_url).await?;
+        info!("Connected to {} for block tracking", chain_name);
         
-        client.get_last_authored_block_time(&collator_account).await
+        // Parse collator address
+        let collator_account: AccountId32 = collator_address.parse()
+            .map_err(|e| anyhow::anyhow!("Invalid collator address: {}", e))?;
+
+        // Get current authorities for author lookup
+        let authorities = self.get_aura_authorities(&api).await?;
+        debug!("{} has {} authorities", chain_name, authorities.len());
+
+        // Subscribe to finalized blocks
+        let mut block_sub = api.blocks().subscribe_finalized().await?;
+        
+        self.mark_connected(chain_name).await;
+
+        while let Some(block_result) = block_sub.next().await {
+            if self.is_shutdown().await {
+                return Ok(());
+            }
+
+            match block_result {
+                Ok(block) => {
+                    // Check if our collator authored this block
+                    if let Some(author) = self.get_block_author_from_header(&block, &authorities) {
+                        if author == collator_account {
+                            debug!("{}: Authored block #{}", chain_name, block.number());
+                            self.record_authored_block(chain_name).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("{}: Block subscription error: {}", chain_name, e);
+                    return Err(e.into());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get Aura authorities from chain storage
+    async fn get_aura_authorities(&self, api: &OnlineClient<PolkadotConfig>) -> anyhow::Result<Vec<AccountId32>> {
+        let storage_query = subxt::dynamic::storage("Aura", "Authorities", ());
+        let result = api.storage().at_latest().await?.fetch(&storage_query).await?;
+        
+        match result {
+            Some(value) => {
+                let decoded = value.to_value()?;
+                parse_authorities(&decoded)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Get block author from the Aura pre-runtime digest
+    fn get_block_author_from_header(
+        &self,
+        block: &subxt::blocks::Block<PolkadotConfig, OnlineClient<PolkadotConfig>>,
+        authorities: &[AccountId32],
+    ) -> Option<AccountId32> {
+        if authorities.is_empty() {
+            return None;
+        }
+
+        let header = block.header();
+        for log in header.digest.logs.iter() {
+            if let subxt::config::substrate::DigestItem::PreRuntime(engine_id, data) = log {
+                // Aura engine ID is *b"aura"
+                if engine_id == b"aura" && data.len() >= 8 {
+                    // Slot is encoded as u64 LE
+                    let slot = u64::from_le_bytes(data[0..8].try_into().ok()?);
+                    let author_index = (slot as usize) % authorities.len();
+                    return Some(authorities[author_index].clone());
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -225,4 +306,78 @@ impl Default for BlockTracker {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// Helper to parse authorities from dynamic value
+fn parse_authorities<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<T>) -> anyhow::Result<Vec<AccountId32>> {
+    use subxt::ext::scale_value::{ValueDef, Composite, Primitive};
+    
+    let mut authorities = Vec::new();
+    
+    fn extract_accounts<T: std::fmt::Debug>(
+        value: &subxt::ext::scale_value::Value<T>,
+        accounts: &mut Vec<AccountId32>,
+    ) {
+        match &value.value {
+            ValueDef::Composite(Composite::Unnamed(items)) => {
+                // Could be the list itself or a wrapper
+                if items.len() == 1 {
+                    // Might be a newtype wrapper
+                    extract_accounts(&items[0], accounts);
+                } else {
+                    // This is likely the actual list
+                    for item in items {
+                        if let Some(account) = try_parse_account(item) {
+                            accounts.push(account);
+                        } else {
+                            // Recurse in case of nested structure
+                            extract_accounts(item, accounts);
+                        }
+                    }
+                }
+            }
+            ValueDef::Composite(Composite::Named(fields)) => {
+                for (name, val) in fields {
+                    if name == "0" {
+                        extract_accounts(val, accounts);
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    fn try_parse_account<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<T>) -> Option<AccountId32> {
+        match &value.value {
+            ValueDef::Composite(Composite::Unnamed(bytes)) if bytes.len() == 32 => {
+                let mut account_bytes = [0u8; 32];
+                for (i, b) in bytes.iter().enumerate() {
+                    if let ValueDef::Primitive(Primitive::U128(n)) = &b.value {
+                        account_bytes[i] = *n as u8;
+                    } else {
+                        return None;
+                    }
+                }
+                Some(AccountId32(account_bytes))
+            }
+            ValueDef::Composite(Composite::Unnamed(items)) if items.len() == 1 => {
+                // Newtype wrapper
+                try_parse_account(&items[0])
+            }
+            ValueDef::Composite(Composite::Named(fields)) => {
+                // Look for inner field
+                for (name, val) in fields {
+                    if name == "0" || name.to_lowercase().contains("inner") {
+                        return try_parse_account(val);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    
+    extract_accounts(value, &mut authorities);
+    Ok(authorities)
 }
