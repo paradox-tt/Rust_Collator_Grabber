@@ -346,10 +346,20 @@ impl CollatorMonitor {
         // Parse collator address
         let collator_account = client.parse_address(collator_address)?;
 
-        // Check current collator status
+        // Check current collator status first
         let status = client.get_collator_status(&collator_account).await?;
 
-        // Get balance info for bond calculations
+        // If invulnerable, no action needed - return early
+        if status == CollatorStatus::Invulnerable {
+            info!(
+                "{} is an invulnerable collator on {} - no action needed",
+                collator_address,
+                client.chain_name()
+            );
+            return Ok(MonitorStatus::AlreadyCollator(CollatorStatus::Invulnerable));
+        }
+
+        // For candidates and non-collators, we need balance and bond info
         let free_balance = client.get_free_balance(&collator_account).await?;
         let reserve_amount = network.reserve_amount();
         let available_for_bond = free_balance.saturating_sub(reserve_amount);
@@ -366,12 +376,8 @@ impl CollatorMonitor {
 
         match status.clone() {
             CollatorStatus::Invulnerable => {
-                info!(
-                    "{} is an invulnerable collator on {}",
-                    collator_address,
-                    client.chain_name()
-                );
-                Ok(MonitorStatus::AlreadyCollator(CollatorStatus::Invulnerable))
+                // Already handled above, but keep for completeness
+                unreachable!()
             }
             CollatorStatus::Candidate { deposit: current_bond } => {
                 info!(
@@ -381,8 +387,27 @@ impl CollatorMonitor {
                     current_bond
                 );
                 
-                // Check if we should increase the bond
-                if available_for_bond > current_bond {
+                // Log the balance details for debugging
+                info!(
+                    "{}: free_balance={}, reserve={}, available_for_bond={}, current_bond={}",
+                    client.chain_name(),
+                    format_balance(free_balance, network.decimals(), network.symbol()),
+                    format_balance(reserve_amount, network.decimals(), network.symbol()),
+                    format_balance(available_for_bond, network.decimals(), network.symbol()),
+                    format_balance(current_bond, network.decimals(), network.symbol()),
+                );
+                
+                // Minimum increase threshold (0.1 DOT or 0.01 KSM) to avoid tiny updates
+                let min_increase = match network {
+                    Network::Polkadot => 1_000_000_000u128, // 0.1 DOT
+                    Network::Kusama => 10_000_000_000u128,  // 0.01 KSM
+                };
+                
+                // Check if we should increase the bond (must be meaningfully higher)
+                let should_update = available_for_bond > current_bond && 
+                    (available_for_bond - current_bond) >= min_increase;
+                
+                if should_update {
                     if read_only {
                         let reason = if !chain_supports_proxy(chain) {
                             "No proxy support - bond update required".to_string()
@@ -392,7 +417,9 @@ impl CollatorMonitor {
                         
                         warn!(
                             "Manual action needed on {}: could increase bond from {} to {}",
-                            client.chain_name(), current_bond, available_for_bond
+                            client.chain_name(), 
+                            format_balance(current_bond, network.decimals(), network.symbol()),
+                            format_balance(available_for_bond, network.decimals(), network.symbol())
                         );
                         
                         let _ = self
@@ -414,7 +441,9 @@ impl CollatorMonitor {
                     
                     info!(
                         "Increasing bond from {} to {} on {}",
-                        current_bond, available_for_bond, client.chain_name()
+                        format_balance(current_bond, network.decimals(), network.symbol()),
+                        format_balance(available_for_bond, network.decimals(), network.symbol()),
+                        client.chain_name()
                     );
                     
                     let tx_hash = client
@@ -439,6 +468,14 @@ impl CollatorMonitor {
                         tx_hash,
                     })
                 } else {
+                    if available_for_bond > current_bond {
+                        debug!(
+                            "{}: Bond increase too small ({} < min {}), skipping",
+                            client.chain_name(),
+                            format_balance(available_for_bond - current_bond, network.decimals(), network.symbol()),
+                            format_balance(min_increase, network.decimals(), network.symbol())
+                        );
+                    }
                     Ok(MonitorStatus::AlreadyCollator(CollatorStatus::Candidate {
                         deposit: current_bond,
                     }))
