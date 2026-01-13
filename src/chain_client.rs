@@ -510,6 +510,43 @@ impl ChainClient {
         // Fallback: return 0 if timestamp not found
         Ok(0)
     }
+
+    /// Generate batch call data for registerAsCandidate + updateCandidacyBond
+    /// This is for chains without proxy support where manual action is needed
+    pub fn generate_registration_batch_call_data(&self, bond_amount: u128) -> String {
+        use parity_scale_codec::Encode;
+        
+        // Build the calls manually using SCALE encoding
+        // Utility.batch_all call index is typically 0x1802 (pallet 24, call 2)
+        // CollatorSelection.registerAsCandidate is typically 0x1500 (pallet 21, call 0)
+        // CollatorSelection.updateCandidacyBond is typically 0x1504 (pallet 21, call 4)
+        
+        // Note: Exact pallet indices may vary per chain, but these are common for system chains
+        
+        // registerAsCandidate has no arguments
+        let register_call: Vec<u8> = vec![0x15, 0x00];
+        
+        // updateCandidacyBond(new_deposit: Balance)
+        let mut update_bond_call: Vec<u8> = vec![0x15, 0x04];
+        update_bond_call.extend(bond_amount.encode());
+        
+        // Wrap in utility.batch_all
+        // batch_all takes Vec<Call>
+        let mut batch_call: Vec<u8> = vec![0x18, 0x02];
+        
+        // Encode the vector of calls
+        // Length prefix (compact encoding for 2 items)
+        batch_call.push(0x08); // Compact encoding of 2
+        
+        // First call (registerAsCandidate) - need length prefix
+        batch_call.extend(&register_call);
+        
+        // Second call (updateCandidacyBond)
+        batch_call.extend(&update_bond_call);
+        
+        // Return as hex
+        format!("0x{}", hex::encode(batch_call))
+    }
 }
 
 // Helper functions to parse dynamic values

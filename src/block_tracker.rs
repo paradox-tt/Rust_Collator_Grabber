@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt::utils::AccountId32;
 use futures::StreamExt;
@@ -227,10 +227,6 @@ impl BlockTracker {
         let collator_account: AccountId32 = collator_address.parse()
             .map_err(|e| anyhow::anyhow!("Invalid collator address: {}", e))?;
 
-        // Get current authorities for author lookup
-        let authorities = self.get_aura_authorities(&api).await?;
-        debug!("{} has {} authorities", chain_name, authorities.len());
-
         // Subscribe to finalized blocks
         let mut block_sub = api.blocks().subscribe_finalized().await?;
         
@@ -243,10 +239,19 @@ impl BlockTracker {
 
             match block_result {
                 Ok(block) => {
+                    // Refresh authorities for each block (they can change)
+                    let authorities = match self.get_aura_authorities(&api, &block).await {
+                        Ok(a) => a,
+                        Err(e) => {
+                            debug!("{}: Failed to get authorities: {}", chain_name, e);
+                            continue;
+                        }
+                    };
+
                     // Check if our collator authored this block
-                    if let Some(author) = self.get_block_author_from_header(&block, &authorities) {
+                    if let Some(author) = self.get_block_author_from_digest(&block, &authorities) {
                         if author == collator_account {
-                            debug!("{}: Authored block #{}", chain_name, block.number());
+                            info!("{}: Authored block #{}", chain_name, block.number());
                             self.record_authored_block(chain_name).await;
                         }
                     }
@@ -261,22 +266,41 @@ impl BlockTracker {
         Ok(())
     }
 
-    /// Get Aura authorities from chain storage
-    async fn get_aura_authorities(&self, api: &OnlineClient<PolkadotConfig>) -> anyhow::Result<Vec<AccountId32>> {
+    /// Get Aura authorities from chain storage at a specific block
+    async fn get_aura_authorities(
+        &self, 
+        api: &OnlineClient<PolkadotConfig>,
+        block: &subxt::blocks::Block<PolkadotConfig, OnlineClient<PolkadotConfig>>,
+    ) -> anyhow::Result<Vec<AccountId32>> {
+        // Try Aura.Authorities first
         let storage_query = subxt::dynamic::storage("Aura", "Authorities", ());
-        let result = api.storage().at_latest().await?.fetch(&storage_query).await?;
+        let result = api.storage().at(block.reference()).fetch(&storage_query).await?;
         
-        match result {
-            Some(value) => {
-                let decoded = value.to_value()?;
-                parse_authorities(&decoded)
+        if let Some(value) = result {
+            let decoded = value.to_value()?;
+            let authorities = parse_authorities_from_value(&decoded)?;
+            if !authorities.is_empty() {
+                return Ok(authorities);
             }
-            None => Ok(Vec::new()),
         }
+
+        // Fallback: Try Session.Validators
+        let storage_query = subxt::dynamic::storage("Session", "Validators", ());
+        let result = api.storage().at(block.reference()).fetch(&storage_query).await?;
+        
+        if let Some(value) = result {
+            let decoded = value.to_value()?;
+            let authorities = parse_authorities_from_value(&decoded)?;
+            if !authorities.is_empty() {
+                return Ok(authorities);
+            }
+        }
+
+        Ok(Vec::new())
     }
 
     /// Get block author from the Aura pre-runtime digest
-    fn get_block_author_from_header(
+    fn get_block_author_from_digest(
         &self,
         block: &subxt::blocks::Block<PolkadotConfig, OnlineClient<PolkadotConfig>>,
         authorities: &[AccountId32],
@@ -308,48 +332,19 @@ impl Default for BlockTracker {
     }
 }
 
-// Helper to parse authorities from dynamic value
-fn parse_authorities<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<T>) -> anyhow::Result<Vec<AccountId32>> {
+/// Parse authorities from a dynamic scale value
+fn parse_authorities_from_value<T: std::fmt::Debug>(
+    value: &subxt::ext::scale_value::Value<T>
+) -> anyhow::Result<Vec<AccountId32>> {
     use subxt::ext::scale_value::{ValueDef, Composite, Primitive};
     
     let mut authorities = Vec::new();
     
-    fn extract_accounts<T: std::fmt::Debug>(
-        value: &subxt::ext::scale_value::Value<T>,
-        accounts: &mut Vec<AccountId32>,
-    ) {
+    fn try_extract_account<T: std::fmt::Debug>(
+        value: &subxt::ext::scale_value::Value<T>
+    ) -> Option<AccountId32> {
         match &value.value {
-            ValueDef::Composite(Composite::Unnamed(items)) => {
-                // Could be the list itself or a wrapper
-                if items.len() == 1 {
-                    // Might be a newtype wrapper
-                    extract_accounts(&items[0], accounts);
-                } else {
-                    // This is likely the actual list
-                    for item in items {
-                        if let Some(account) = try_parse_account(item) {
-                            accounts.push(account);
-                        } else {
-                            // Recurse in case of nested structure
-                            extract_accounts(item, accounts);
-                        }
-                    }
-                }
-            }
-            ValueDef::Composite(Composite::Named(fields)) => {
-                for (name, val) in fields {
-                    if name == "0" {
-                        extract_accounts(val, accounts);
-                        return;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    
-    fn try_parse_account<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<T>) -> Option<AccountId32> {
-        match &value.value {
+            // Direct 32-byte array
             ValueDef::Composite(Composite::Unnamed(bytes)) if bytes.len() == 32 => {
                 let mut account_bytes = [0u8; 32];
                 for (i, b) in bytes.iter().enumerate() {
@@ -361,15 +356,15 @@ fn parse_authorities<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<
                 }
                 Some(AccountId32(account_bytes))
             }
+            // Newtype wrapper with single element
             ValueDef::Composite(Composite::Unnamed(items)) if items.len() == 1 => {
-                // Newtype wrapper
-                try_parse_account(&items[0])
+                try_extract_account(&items[0])
             }
+            // Named struct with "0" or similar field
             ValueDef::Composite(Composite::Named(fields)) => {
-                // Look for inner field
                 for (name, val) in fields {
                     if name == "0" || name.to_lowercase().contains("inner") {
-                        return try_parse_account(val);
+                        return try_extract_account(val);
                     }
                 }
                 None
@@ -378,6 +373,43 @@ fn parse_authorities<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<
         }
     }
     
-    extract_accounts(value, &mut authorities);
+    fn extract_all_accounts<T: std::fmt::Debug>(
+        value: &subxt::ext::scale_value::Value<T>,
+        accounts: &mut Vec<AccountId32>,
+    ) {
+        match &value.value {
+            ValueDef::Composite(Composite::Unnamed(items)) => {
+                // Check if this is a single newtype wrapper
+                if items.len() == 1 {
+                    // Try to extract as account first
+                    if let Some(account) = try_extract_account(value) {
+                        accounts.push(account);
+                    } else {
+                        // Recurse into the wrapper
+                        extract_all_accounts(&items[0], accounts);
+                    }
+                } else {
+                    // This is likely the actual list of accounts
+                    for item in items {
+                        if let Some(account) = try_extract_account(item) {
+                            accounts.push(account);
+                        }
+                    }
+                }
+            }
+            ValueDef::Composite(Composite::Named(fields)) => {
+                // Look for "0" field which indicates newtype wrapper
+                for (name, val) in fields {
+                    if name == "0" {
+                        extract_all_accounts(val, accounts);
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    extract_all_accounts(value, &mut authorities);
     Ok(authorities)
 }
