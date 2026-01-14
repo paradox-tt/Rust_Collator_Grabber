@@ -1,18 +1,51 @@
 //! Background block tracker for monitoring last authored blocks per chain.
 //!
 //! This module subscribes to new blocks on each chain and tracks when
-//! the collator last authored a block.
+//! the collator last authored a block using typed metadata for proper
+//! Aura slot and Session key owner lookups.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use subxt::{OnlineClient, PolkadotConfig};
 use subxt::utils::AccountId32;
 use futures::StreamExt;
+use parity_scale_codec::Encode;
 
 use crate::config::{default_rpc_url, AppConfig, Network, SystemChain};
+
+// ====== Subxt metadata modules (one per chain) ======
+#[subxt::subxt(runtime_metadata_path = "metadata/asset-hub-polkadot.scale")]
+pub mod asset_hub_polkadot {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/asset-hub-kusama.scale")]
+pub mod asset_hub_kusama {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/bridge-hub-polkadot.scale")]
+pub mod bridge_hub_polkadot {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/bridge-hub-kusama.scale")]
+pub mod bridge_hub_kusama {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/collectives-polkadot.scale")]
+pub mod collectives_polkadot {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/coretime-polkadot.scale")]
+pub mod coretime_polkadot {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/coretime-kusama.scale")]
+pub mod coretime_kusama {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/people-polkadot.scale")]
+pub mod people_polkadot {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/people-kusama.scale")]
+pub mod people_kusama {}
+
+#[subxt::subxt(runtime_metadata_path = "metadata/encointer-kusama.scale")]
+pub mod encointer_kusama {}
 
 /// Tracks last authored block times for all chains
 #[derive(Debug, Clone)]
@@ -191,6 +224,15 @@ impl BlockTracker {
             data.insert(chain_name.clone(), LastBlockInfo::new());
         }
 
+        // Parse collator address once
+        let collator_account: AccountId32 = match collator_address.parse() {
+            Ok(acc) => acc,
+            Err(e) => {
+                warn!("Invalid collator address for {}: {}", chain_name, e);
+                return;
+            }
+        };
+
         // Reconnection loop
         loop {
             if self.is_shutdown().await {
@@ -198,7 +240,13 @@ impl BlockTracker {
                 break;
             }
 
-            match self.subscribe_to_blocks(&chain_name, &rpc_url, collator_address).await {
+            match self.subscribe_to_blocks_typed(
+                &chain_name, 
+                &rpc_url, 
+                network, 
+                chain, 
+                &collator_account
+            ).await {
                 Ok(()) => {
                     // Subscription ended normally (shutdown)
                     break;
@@ -212,25 +260,19 @@ impl BlockTracker {
         }
     }
 
-    /// Subscribe to new blocks and track authorship
-    async fn subscribe_to_blocks(
+    /// Subscribe to new blocks using typed metadata
+    async fn subscribe_to_blocks_typed(
         &self,
         chain_name: &str,
         rpc_url: &str,
-        collator_address: &str,
+        network: Network,
+        chain: SystemChain,
+        collator_account: &AccountId32,
     ) -> anyhow::Result<()> {
         // Connect to the chain
         let api = OnlineClient::<PolkadotConfig>::from_url(rpc_url).await?;
         info!("Connected to {} for block tracking", chain_name);
         
-        // Parse collator address
-        let collator_account: AccountId32 = collator_address.parse()
-            .map_err(|e| anyhow::anyhow!("Invalid collator address: {}", e))?;
-
-        // Get current authorities for author lookup
-        let authorities = self.get_aura_authorities(&api).await?;
-        debug!("{} has {} authorities", chain_name, authorities.len());
-
         // Subscribe to finalized blocks
         let mut block_sub = api.blocks().subscribe_finalized().await?;
         
@@ -243,10 +285,14 @@ impl BlockTracker {
 
             match block_result {
                 Ok(block) => {
-                    // Check if our collator authored this block
-                    if let Some(author) = self.get_block_author_from_header(&block, &authorities) {
-                        if author == collator_account {
-                            debug!("{}: Authored block #{}", chain_name, block.number());
+                    let block_hash = block.hash();
+                    
+                    // Get the block author using typed storage queries
+                    let author = get_block_author_typed(&api, block_hash, network, chain).await;
+                    
+                    if let Some(author_account) = author {
+                        if author_account == *collator_account {
+                            info!("{}: Authored block #{}", chain_name, block.number());
                             self.record_authored_block(chain_name).await;
                         }
                     }
@@ -260,46 +306,6 @@ impl BlockTracker {
 
         Ok(())
     }
-
-    /// Get Aura authorities from chain storage
-    async fn get_aura_authorities(&self, api: &OnlineClient<PolkadotConfig>) -> anyhow::Result<Vec<AccountId32>> {
-        let storage_query = subxt::dynamic::storage("Aura", "Authorities", ());
-        let result = api.storage().at_latest().await?.fetch(&storage_query).await?;
-        
-        match result {
-            Some(value) => {
-                let decoded = value.to_value()?;
-                parse_authorities(&decoded)
-            }
-            None => Ok(Vec::new()),
-        }
-    }
-
-    /// Get block author from the Aura pre-runtime digest
-    fn get_block_author_from_header(
-        &self,
-        block: &subxt::blocks::Block<PolkadotConfig, OnlineClient<PolkadotConfig>>,
-        authorities: &[AccountId32],
-    ) -> Option<AccountId32> {
-        if authorities.is_empty() {
-            return None;
-        }
-
-        let header = block.header();
-        for log in header.digest.logs.iter() {
-            if let subxt::config::substrate::DigestItem::PreRuntime(engine_id, data) = log {
-                // Aura engine ID is *b"aura"
-                if engine_id == b"aura" && data.len() >= 8 {
-                    // Slot is encoded as u64 LE
-                    let slot = u64::from_le_bytes(data[0..8].try_into().ok()?);
-                    let author_index = (slot as usize) % authorities.len();
-                    return Some(authorities[author_index].clone());
-                }
-            }
-        }
-
-        None
-    }
 }
 
 impl Default for BlockTracker {
@@ -308,76 +314,91 @@ impl Default for BlockTracker {
     }
 }
 
-// Helper to parse authorities from dynamic value
-fn parse_authorities<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<T>) -> anyhow::Result<Vec<AccountId32>> {
-    use subxt::ext::scale_value::{ValueDef, Composite, Primitive};
+/// Convert a runtime AccountId32 (opaque newtype) into [u8;32] by SCALE-encoding then truncating.
+fn account_to_raw32<T: Encode>(acc: T) -> [u8; 32] {
+    let bytes = acc.encode();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes[..32]);
+    out
+}
+
+/// Get block author using typed storage queries for each chain
+async fn get_block_author_typed(
+    api: &OnlineClient<PolkadotConfig>,
+    block_hash: subxt::utils::H256,
+    network: Network,
+    chain: SystemChain,
+) -> Option<AccountId32> {
+    let aura_key_type = *b"aura";
     
-    let mut authorities = Vec::new();
-    
-    fn extract_accounts<T: std::fmt::Debug>(
-        value: &subxt::ext::scale_value::Value<T>,
-        accounts: &mut Vec<AccountId32>,
-    ) {
-        match &value.value {
-            ValueDef::Composite(Composite::Unnamed(items)) => {
-                // Could be the list itself or a wrapper
-                if items.len() == 1 {
-                    // Might be a newtype wrapper
-                    extract_accounts(&items[0], accounts);
-                } else {
-                    // This is likely the actual list
-                    for item in items {
-                        if let Some(account) = try_parse_account(item) {
-                            accounts.push(account);
-                        } else {
-                            // Recurse in case of nested structure
-                            extract_accounts(item, accounts);
-                        }
-                    }
+    // Macro to reduce boilerplate for each chain
+    macro_rules! get_author {
+        ($mod:ident, $key_type:ty) => {{
+            // Get current slot
+            let slot_query = $mod::storage().aura().current_slot();
+            let slot: Option<$mod::runtime_types::sp_consensus_slots::Slot> = 
+                api.storage().at(block_hash).fetch(&slot_query).await.ok()?;
+            
+            // Get authorities
+            let auths_query = $mod::storage().aura().authorities();
+            let auths: Option<$mod::runtime_types::bounded_collections::bounded_vec::BoundedVec<$key_type>> =
+                api.storage().at(block_hash).fetch(&auths_query).await.ok()?;
+            
+            if let (Some(slot), Some(auths)) = (slot, auths) {
+                let authorities = auths.0;
+                if authorities.is_empty() {
+                    return None;
                 }
-            }
-            ValueDef::Composite(Composite::Named(fields)) => {
-                for (name, val) in fields {
-                    if name == "0" {
-                        extract_accounts(val, accounts);
-                        return;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    
-    fn try_parse_account<T: std::fmt::Debug>(value: &subxt::ext::scale_value::Value<T>) -> Option<AccountId32> {
-        match &value.value {
-            ValueDef::Composite(Composite::Unnamed(bytes)) if bytes.len() == 32 => {
-                let mut account_bytes = [0u8; 32];
-                for (i, b) in bytes.iter().enumerate() {
-                    if let ValueDef::Primitive(Primitive::U128(n)) = &b.value {
-                        account_bytes[i] = *n as u8;
-                    } else {
-                        return None;
-                    }
-                }
-                Some(AccountId32(account_bytes))
-            }
-            ValueDef::Composite(Composite::Unnamed(items)) if items.len() == 1 => {
-                // Newtype wrapper
-                try_parse_account(&items[0])
-            }
-            ValueDef::Composite(Composite::Named(fields)) => {
-                // Look for inner field
-                for (name, val) in fields {
-                    if name == "0" || name.to_lowercase().contains("inner") {
-                        return try_parse_account(val);
-                    }
-                }
+                
+                let idx = (slot.0 as usize) % authorities.len();
+                let aura_key = authorities[idx].0;
+                
+                // Look up the owner via Session.KeyOwner
+                let key_type = $mod::runtime_types::sp_core::crypto::KeyTypeId(aura_key_type);
+                let owner_query = $mod::storage().session().key_owner((key_type, aura_key.to_vec()));
+                let owner: Option<_> = api.storage().at(block_hash).fetch(&owner_query).await.ok()?;
+                
+                owner.map(|o| AccountId32(account_to_raw32(o)))
+            } else {
                 None
             }
-            _ => None,
-        }
+        }};
     }
-    
-    extract_accounts(value, &mut authorities);
-    Ok(authorities)
+
+    match (network, chain) {
+        // Polkadot chains
+        (Network::Polkadot, SystemChain::AssetHub) => {
+            // Asset Hub Polkadot uses ed25519 for Aura
+            get_author!(asset_hub_polkadot, asset_hub_polkadot::runtime_types::sp_consensus_aura::ed25519::app_ed25519::Public)
+        }
+        (Network::Polkadot, SystemChain::BridgeHub) => {
+            get_author!(bridge_hub_polkadot, bridge_hub_polkadot::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Polkadot, SystemChain::Collectives) => {
+            get_author!(collectives_polkadot, collectives_polkadot::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Polkadot, SystemChain::Coretime) => {
+            get_author!(coretime_polkadot, coretime_polkadot::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Polkadot, SystemChain::People) => {
+            get_author!(people_polkadot, people_polkadot::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        // Kusama chains
+        (Network::Kusama, SystemChain::AssetHub) => {
+            get_author!(asset_hub_kusama, asset_hub_kusama::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Kusama, SystemChain::BridgeHub) => {
+            get_author!(bridge_hub_kusama, bridge_hub_kusama::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Kusama, SystemChain::Coretime) => {
+            get_author!(coretime_kusama, coretime_kusama::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Kusama, SystemChain::People) => {
+            get_author!(people_kusama, people_kusama::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        (Network::Kusama, SystemChain::Encointer) => {
+            get_author!(encointer_kusama, encointer_kusama::runtime_types::sp_consensus_aura::sr25519::app_sr25519::Public)
+        }
+        _ => None,
+    }
 }

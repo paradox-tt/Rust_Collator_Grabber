@@ -185,7 +185,8 @@ impl CollatorMonitor {
                         let status_str = match collator_status {
                             CollatorStatus::Invulnerable => "Invulnerable".to_string(),
                             CollatorStatus::Candidate { deposit } => {
-                                format!("Candidate (bond: {})", deposit)
+                                format!("Candidate (bond: {})", 
+                                    format_balance(*deposit, network.decimals(), network.symbol()))
                             }
                             CollatorStatus::NotCollator => "Not a collator".to_string(),
                         };
@@ -422,6 +423,8 @@ impl CollatorMonitor {
                             format_balance(available_for_bond, network.decimals(), network.symbol())
                         );
                         
+                        // For bond updates on existing candidates, we don't need batch - just updateCandidacyBond
+                        // No batch call data needed here since they're already registered
                         let _ = self
                             .slack
                             .alert_manual_action_required(
@@ -430,6 +433,7 @@ impl CollatorMonitor {
                                 &format!("Bond can be increased from {} to {}", 
                                     format_balance(current_bond, network.decimals(), network.symbol()),
                                     format_balance(available_for_bond, network.decimals(), network.symbol())),
+                                None, // No batch needed - already a candidate
                             )
                             .await;
                         
@@ -567,8 +571,10 @@ impl CollatorMonitor {
                         .alert_manual_action_required(
                             client.chain_name(),
                             &collator_account.to_string(),
-                            &format!("Registration required with bond {}", 
+                            &format!("Registration required with bond {}. Use Polkadot.js: Developer > Extrinsics > collatorSelection > registerAsCandidate(), then updateCandidacyBond({})", 
+                                format_balance(available_for_bond, network.decimals(), network.symbol()),
                                 format_balance(available_for_bond, network.decimals(), network.symbol())),
+                            None,
                         )
                         .await;
                     

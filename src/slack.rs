@@ -404,6 +404,7 @@ impl SlackNotifier {
         chain_name: &str,
         collator_address: &str,
         action_required: &str,
+        batch_call_data: Option<&str>,
     ) -> Result<()> {
         self.add_outstanding_issue(chain_name);
         self.mark_manual_action_required(chain_name);
@@ -415,16 +416,22 @@ impl SlackNotifier {
         }
 
         let mentions = self.format_user_mentions();
+        
+        let call_data_section = if let Some(data) = batch_call_data {
+            format!("\n\n*Batch Call Data (for Polkadot.js Developer > Extrinsics > Decode):*\n```{}```", data)
+        } else {
+            String::new()
+        };
 
         let message = format!(
             "🔧 *Manual Action Required*\n\n\
             *Chain:* {}\n\
             *Collator:* `{}`\n\n\
             Automatic action not possible on this chain.\n\
-            *Action needed:* {}\n\n\
+            *Action needed:* {}{}\n\n\
             Please perform this action manually via Polkadot.js or similar.\n\n\
             _This alert is rate-limited to once every 4 hours._{}",
-            chain_name, collator_address, action_required, mentions
+            chain_name, collator_address, action_required, call_data_section, mentions
         );
 
         self.send(&message).await
@@ -455,8 +462,16 @@ impl SlackNotifier {
                     String::new()
                 };
                 
-                // Use checkmark for healthy candidates
-                format!("✅ {}{}", position_str, distance_str)
+                // Check if position is outside the active set (position > max)
+                let is_outside_active = max > 0 && position > max as usize;
+                
+                if is_outside_active {
+                    // Warning - outside active set, needs more bond
+                    format!("⚠️ {}{} *OUTSIDE ACTIVE SET*", position_str, distance_str)
+                } else {
+                    // Healthy - in active set
+                    format!("✅ {}{}", position_str, distance_str)
+                }
             } else {
                 "❌ *Not a collator*".to_string()
             };
