@@ -8,6 +8,7 @@ mod block_tracker;
 mod chain_client;
 mod config;
 mod error;
+mod metadata;
 mod monitor;
 mod slack;
 

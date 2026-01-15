@@ -511,41 +511,158 @@ impl ChainClient {
         Ok(0)
     }
 
-    /// Generate batch call data for registerAsCandidate + updateCandidacyBond
-    /// This is for chains without proxy support where manual action is needed
-    pub fn generate_registration_batch_call_data(&self, bond_amount: u128) -> String {
+    /// Generate encoded call data for registering as candidate and updating bond
+    /// Returns hex-encoded call data that can be pasted into Polkadot.js
+    pub fn generate_registration_call_data(&self, bond_amount: u128) -> String {
         use parity_scale_codec::Encode;
+        use crate::metadata::*;
+        use crate::config::{Network, SystemChain};
         
-        // Build the calls manually using SCALE encoding
-        // Utility.batch_all call index is typically 0x1802 (pallet 24, call 2)
-        // CollatorSelection.registerAsCandidate is typically 0x1500 (pallet 21, call 0)
-        // CollatorSelection.updateCandidacyBond is typically 0x1504 (pallet 21, call 4)
+        // Generate the updateCandidacyBond call using typed metadata
+        // This ensures correct pallet and call indices for each chain
+        let call_data = match (self.network, self.chain) {
+            (Network::Polkadot, SystemChain::BridgeHub) => {
+                let call = bridge_hub_polkadot::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::Coretime) => {
+                let call = coretime_polkadot::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::Collectives) => {
+                let call = collectives_polkadot::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::People) => {
+                let call = people_polkadot::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::AssetHub) => {
+                let call = asset_hub_polkadot::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::BridgeHub) => {
+                let call = bridge_hub_kusama::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::Coretime) => {
+                let call = coretime_kusama::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::People) => {
+                let call = people_kusama::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::AssetHub) => {
+                let call = asset_hub_kusama::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::Encointer) => {
+                let call = encointer_kusama::tx()
+                    .collator_selection()
+                    .update_candidacy_bond(bond_amount);
+                call.call_data().encode()
+            }
+            _ => {
+                // Fallback - shouldn't happen
+                vec![]
+            }
+        };
         
-        // Note: Exact pallet indices may vary per chain, but these are common for system chains
+        format!("0x{}", hex::encode(call_data))
+    }
+
+    /// Generate encoded call data for registerAsCandidate
+    pub fn generate_register_call_data(&self) -> String {
+        use parity_scale_codec::Encode;
+        use crate::metadata::*;
+        use crate::config::{Network, SystemChain};
         
-        // registerAsCandidate has no arguments
-        let register_call: Vec<u8> = vec![0x15, 0x00];
+        let call_data = match (self.network, self.chain) {
+            (Network::Polkadot, SystemChain::BridgeHub) => {
+                let call = bridge_hub_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::Coretime) => {
+                let call = coretime_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::Collectives) => {
+                let call = collectives_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::People) => {
+                let call = people_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Polkadot, SystemChain::AssetHub) => {
+                let call = asset_hub_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::BridgeHub) => {
+                let call = bridge_hub_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::Coretime) => {
+                let call = coretime_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::People) => {
+                let call = people_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::AssetHub) => {
+                let call = asset_hub_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            (Network::Kusama, SystemChain::Encointer) => {
+                let call = encointer_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate();
+                call.call_data().encode()
+            }
+            _ => {
+                vec![]
+            }
+        };
         
-        // updateCandidacyBond(new_deposit: Balance)
-        let mut update_bond_call: Vec<u8> = vec![0x15, 0x04];
-        update_bond_call.extend(bond_amount.encode());
-        
-        // Wrap in utility.batch_all
-        // batch_all takes Vec<Call>
-        let mut batch_call: Vec<u8> = vec![0x18, 0x02];
-        
-        // Encode the vector of calls
-        // Length prefix (compact encoding for 2 items)
-        batch_call.push(0x08); // Compact encoding of 2
-        
-        // First call (registerAsCandidate) - need length prefix
-        batch_call.extend(&register_call);
-        
-        // Second call (updateCandidacyBond)
-        batch_call.extend(&update_bond_call);
-        
-        // Return as hex
-        format!("0x{}", hex::encode(batch_call))
+        format!("0x{}", hex::encode(call_data))
     }
 }
 

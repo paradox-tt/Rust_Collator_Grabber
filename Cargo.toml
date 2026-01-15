@@ -45,3 +45,6 @@ parity-scale-codec = "3"
 
 # Hex encoding/decoding
 hex = "0.4"
+
+# SS58 address conversion
+sp-core = { version = "34", default-features = false, features = ["std"] }

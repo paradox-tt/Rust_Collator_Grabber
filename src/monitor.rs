@@ -388,14 +388,19 @@ impl CollatorMonitor {
                     current_bond
                 );
                 
+                // When already a candidate, current_bond is LOCKED (not in free_balance)
+                // So the new total bond = current_bond + (free_balance - reserve)
+                let new_total_bond = current_bond.saturating_add(available_for_bond);
+                
                 // Log the balance details for debugging
                 info!(
-                    "{}: free_balance={}, reserve={}, available_for_bond={}, current_bond={}",
+                    "{}: free_balance={}, reserve={}, available_to_add={}, current_bond={}, potential_new_bond={}",
                     client.chain_name(),
                     format_balance(free_balance, network.decimals(), network.symbol()),
                     format_balance(reserve_amount, network.decimals(), network.symbol()),
                     format_balance(available_for_bond, network.decimals(), network.symbol()),
                     format_balance(current_bond, network.decimals(), network.symbol()),
+                    format_balance(new_total_bond, network.decimals(), network.symbol()),
                 );
                 
                 // Minimum increase threshold (0.1 DOT or 0.01 KSM) to avoid tiny updates
@@ -404,9 +409,8 @@ impl CollatorMonitor {
                     Network::Kusama => 10_000_000_000u128,  // 0.01 KSM
                 };
                 
-                // Check if we should increase the bond (must be meaningfully higher)
-                let should_update = available_for_bond > current_bond && 
-                    (available_for_bond - current_bond) >= min_increase;
+                // Check if we have meaningful additional funds to bond
+                let should_update = available_for_bond >= min_increase;
                 
                 if should_update {
                     if read_only {
@@ -420,11 +424,12 @@ impl CollatorMonitor {
                             "Manual action needed on {}: could increase bond from {} to {}",
                             client.chain_name(), 
                             format_balance(current_bond, network.decimals(), network.symbol()),
-                            format_balance(available_for_bond, network.decimals(), network.symbol())
+                            format_balance(new_total_bond, network.decimals(), network.symbol())
                         );
                         
-                        // For bond updates on existing candidates, we don't need batch - just updateCandidacyBond
-                        // No batch call data needed here since they're already registered
+                        // Generate call data for bond update
+                        let update_bond_call = client.generate_registration_call_data(new_total_bond);
+                        
                         let _ = self
                             .slack
                             .alert_manual_action_required(
@@ -432,8 +437,8 @@ impl CollatorMonitor {
                                 &collator_account.to_string(),
                                 &format!("Bond can be increased from {} to {}", 
                                     format_balance(current_bond, network.decimals(), network.symbol()),
-                                    format_balance(available_for_bond, network.decimals(), network.symbol())),
-                                None, // No batch needed - already a candidate
+                                    format_balance(new_total_bond, network.decimals(), network.symbol())),
+                                Some(&update_bond_call),
                             )
                             .await;
                         
@@ -446,12 +451,12 @@ impl CollatorMonitor {
                     info!(
                         "Increasing bond from {} to {} on {}",
                         format_balance(current_bond, network.decimals(), network.symbol()),
-                        format_balance(available_for_bond, network.decimals(), network.symbol()),
+                        format_balance(new_total_bond, network.decimals(), network.symbol()),
                         client.chain_name()
                     );
                     
                     let tx_hash = client
-                        .update_bond_via_proxy(&collator_account, &self.proxy_signer, available_for_bond)
+                        .update_bond_via_proxy(&collator_account, &self.proxy_signer, new_total_bond)
                         .await?;
 
                     let _ = self
@@ -460,7 +465,7 @@ impl CollatorMonitor {
                             client.chain_name(),
                             &collator_account.to_string(),
                             current_bond,
-                            available_for_bond,
+                            new_total_bond,
                             network.symbol(),
                             network.decimals(),
                         )
@@ -468,15 +473,15 @@ impl CollatorMonitor {
 
                     Ok(MonitorStatus::UpdatedBond {
                         old_bond: current_bond,
-                        new_bond: available_for_bond,
+                        new_bond: new_total_bond,
                         tx_hash,
                     })
                 } else {
-                    if available_for_bond > current_bond {
+                    if available_for_bond > 0 {
                         debug!(
                             "{}: Bond increase too small ({} < min {}), skipping",
                             client.chain_name(),
-                            format_balance(available_for_bond - current_bond, network.decimals(), network.symbol()),
+                            format_balance(available_for_bond, network.decimals(), network.symbol()),
                             format_balance(min_increase, network.decimals(), network.symbol())
                         );
                     }
@@ -566,15 +571,23 @@ impl CollatorMonitor {
                         client.chain_name()
                     );
                     
+                    // Generate call data for registration and bond update
+                    let register_call = client.generate_register_call_data();
+                    let update_bond_call = client.generate_registration_call_data(available_for_bond);
+                    
+                    let call_info = format!(
+                        "1. Register: {}\n2. Update bond: {}",
+                        register_call, update_bond_call
+                    );
+                    
                     let _ = self
                         .slack
                         .alert_manual_action_required(
                             client.chain_name(),
                             &collator_account.to_string(),
-                            &format!("Registration required with bond {}. Use Polkadot.js: Developer > Extrinsics > collatorSelection > registerAsCandidate(), then updateCandidacyBond({})", 
-                                format_balance(available_for_bond, network.decimals(), network.symbol()),
+                            &format!("Registration required with bond {}", 
                                 format_balance(available_for_bond, network.decimals(), network.symbol())),
-                            None,
+                            Some(&call_info),
                         )
                         .await;
                     
