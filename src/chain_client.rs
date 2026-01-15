@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use subxt::dynamic::{At, Value};
 use subxt::utils::AccountId32;
 use subxt::{OnlineClient, PolkadotConfig};
+use subxt::tx::Payload;  // For encode_call_data method
 use tracing::{debug, info};
 
 use crate::config::{Network, SystemChain};
@@ -511,75 +512,84 @@ impl ChainClient {
         Ok(0)
     }
 
-    /// Generate encoded call data for registering as candidate and updating bond
+    /// Generate encoded call data for updating bond
     /// Returns hex-encoded call data that can be pasted into Polkadot.js
     pub fn generate_registration_call_data(&self, bond_amount: u128) -> String {
-        use parity_scale_codec::Encode;
         use crate::metadata::*;
         use crate::config::{Network, SystemChain};
         
-        // Generate the updateCandidacyBond call using typed metadata
+        // Generate the update_bond call using typed metadata
         // This ensures correct pallet and call indices for each chain
         let call_data = match (self.network, self.chain) {
             (Network::Polkadot, SystemChain::BridgeHub) => {
-                let call = bridge_hub_polkadot::tx()
+                bridge_hub_polkadot::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::Coretime) => {
-                let call = coretime_polkadot::tx()
+                coretime_polkadot::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::Collectives) => {
-                let call = collectives_polkadot::tx()
+                collectives_polkadot::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::People) => {
-                let call = people_polkadot::tx()
+                people_polkadot::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::AssetHub) => {
-                let call = asset_hub_polkadot::tx()
+                asset_hub_polkadot::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::BridgeHub) => {
-                let call = bridge_hub_kusama::tx()
+                bridge_hub_kusama::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::Coretime) => {
-                let call = coretime_kusama::tx()
+                coretime_kusama::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::People) => {
-                let call = people_kusama::tx()
+                people_kusama::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::AssetHub) => {
-                let call = asset_hub_kusama::tx()
+                asset_hub_kusama::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::Encointer) => {
-                let call = encointer_kusama::tx()
+                encointer_kusama::tx()
                     .collator_selection()
-                    .update_candidacy_bond(bond_amount);
-                call.call_data().encode()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             _ => {
                 // Fallback - shouldn't happen
@@ -592,70 +602,79 @@ impl ChainClient {
 
     /// Generate encoded call data for registerAsCandidate
     pub fn generate_register_call_data(&self) -> String {
-        use parity_scale_codec::Encode;
         use crate::metadata::*;
         use crate::config::{Network, SystemChain};
         
         let call_data = match (self.network, self.chain) {
             (Network::Polkadot, SystemChain::BridgeHub) => {
-                let call = bridge_hub_polkadot::tx()
+                bridge_hub_polkadot::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::Coretime) => {
-                let call = coretime_polkadot::tx()
+                coretime_polkadot::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::Collectives) => {
-                let call = collectives_polkadot::tx()
+                collectives_polkadot::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::People) => {
-                let call = people_polkadot::tx()
+                people_polkadot::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Polkadot, SystemChain::AssetHub) => {
-                let call = asset_hub_polkadot::tx()
+                asset_hub_polkadot::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::BridgeHub) => {
-                let call = bridge_hub_kusama::tx()
+                bridge_hub_kusama::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::Coretime) => {
-                let call = coretime_kusama::tx()
+                coretime_kusama::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::People) => {
-                let call = people_kusama::tx()
+                people_kusama::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::AssetHub) => {
-                let call = asset_hub_kusama::tx()
+                asset_hub_kusama::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             (Network::Kusama, SystemChain::Encointer) => {
-                let call = encointer_kusama::tx()
+                encointer_kusama::tx()
                     .collator_selection()
-                    .register_as_candidate();
-                call.call_data().encode()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
             }
             _ => {
                 vec![]
