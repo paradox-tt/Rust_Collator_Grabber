@@ -21,6 +21,7 @@ use tracing_subscriber::EnvFilter;
 use crate::block_tracker::BlockTracker;
 use crate::config::AppConfig;
 use crate::monitor::{CollatorMonitor, MonitorStatus};
+use crate::slack::SlackNotifier;
 
 #[derive(Parser)]
 #[command(name = "collator-monitor")]
@@ -122,9 +123,15 @@ async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
         interval_secs, summary_interval_secs
     );
 
-    // Start background block trackers
+    // Create slack notifier to share with block tracker
+    let slack = Arc::new(SlackNotifier::new(
+        config.slack_webhook_url.clone(),
+        config.slack_user_ids.clone(),
+    ));
+
+    // Start background block trackers with slack integration
     let block_tracker = Arc::new(BlockTracker::new());
-    let tracker_handles = block_tracker.clone().start_tracking(config.clone());
+    let _tracker_handles = block_tracker.clone().start_tracking(config.clone(), slack.clone());
     
     // Give trackers a moment to initialize
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -158,9 +165,6 @@ async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
     #[allow(unreachable_code)]
     {
         block_tracker.shutdown().await;
-        for handle in tracker_handles {
-            let _ = handle.await;
-        }
         Ok(())
     }
 }

@@ -571,14 +571,8 @@ impl CollatorMonitor {
                         client.chain_name()
                     );
                     
-                    // Generate call data for registration and bond update
-                    let register_call = client.generate_register_call_data();
-                    let update_bond_call = client.generate_registration_call_data(available_for_bond);
-                    
-                    let call_info = format!(
-                        "1. Register: {}\n2. Update bond: {}",
-                        register_call, update_bond_call
-                    );
+                    // Generate proper batch call data (register + update_bond in one batch)
+                    let batch_call_data = client.generate_registration_batch_call_data(available_for_bond);
                     
                     let _ = self
                         .slack
@@ -587,7 +581,7 @@ impl CollatorMonitor {
                             &collator_account.to_string(),
                             &format!("Registration required with bond {}", 
                                 format_balance(available_for_bond, network.decimals(), network.symbol())),
-                            Some(&call_info),
+                            Some(&batch_call_data),
                         )
                         .await;
                     

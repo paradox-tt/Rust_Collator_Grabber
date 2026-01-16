@@ -200,6 +200,58 @@ impl SlackNotifier {
         }
     }
 
+    /// Send a notification and return the message timestamp (for later deletion)
+    /// Note: This only works with bot tokens, not webhooks
+    pub async fn send_and_get_ts(&self, message: &str) -> Option<String> {
+        // For webhook-based notifications, we can't get the timestamp
+        // Log but return None
+        let Some(webhook_url) = &self.webhook_url else {
+            info!("Slack webhook not configured, skipping notification");
+            return None;
+        };
+
+        let payload = SlackMessage {
+            text: message.to_string(),
+            blocks: Some(vec![SlackBlock {
+                block_type: "section".to_string(),
+                text: Some(SlackText {
+                    text_type: "mrkdwn".to_string(),
+                    text: message.to_string(),
+                }),
+            }]),
+        };
+
+        match self.client.post(webhook_url).json(&payload).send().await {
+            Ok(response) if response.status().is_success() => {
+                info!("Slack notification sent (no ts available with webhook)");
+                // Webhooks don't return message timestamps
+                None
+            }
+            Ok(response) => {
+                warn!("Slack notification failed: {}", response.status());
+                None
+            }
+            Err(e) => {
+                warn!("Slack notification error: {}", e);
+                None
+            }
+        }
+    }
+
+    /// Delete a message by timestamp (only works with bot tokens, not webhooks)
+    pub async fn delete_message(&self, _ts: &str) {
+        // Webhook-based notifications can't delete messages
+        // This would require a bot token and the chat.delete API
+        info!("Message deletion not supported with webhook (would need bot token)");
+    }
+
+    /// Send an alert (bypasses rate limiting)
+    pub async fn send_alert(&self, message: &str) -> Result<()> {
+        let mentions = self.format_user_mentions();
+        let full_message = format!("{}{}", message, mentions);
+        self.send(&full_message).await
+    }
+
     /// Send a notification (rate limited for non-success messages)
     pub async fn notify(&self, message: &str) -> Result<()> {
         self.send(message).await
