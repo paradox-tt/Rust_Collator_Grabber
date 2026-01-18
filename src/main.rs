@@ -123,11 +123,23 @@ async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
         interval_secs, summary_interval_secs
     );
 
-    // Create slack notifier to share with block tracker
-    let slack = Arc::new(SlackNotifier::new(
-        config.slack_webhook_url.clone(),
-        config.slack_user_ids.clone(),
-    ));
+    // Create slack notifier - prefer bot token for full functionality
+    let slack = Arc::new(
+        if let (Some(bot_token), Some(channel)) = (&config.slack_bot_token, &config.slack_channel) {
+            info!("Using Slack bot token (message update/delete enabled)");
+            SlackNotifier::with_bot_token(
+                bot_token.clone(),
+                channel.clone(),
+                config.slack_user_ids.clone(),
+            )
+        } else {
+            info!("Using Slack webhook (message update/delete disabled)");
+            SlackNotifier::new(
+                config.slack_webhook_url.clone(),
+                config.slack_user_ids.clone(),
+            )
+        }
+    );
 
     // Start background block trackers with slack integration
     let block_tracker = Arc::new(BlockTracker::new());

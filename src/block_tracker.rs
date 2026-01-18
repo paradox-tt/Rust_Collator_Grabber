@@ -64,8 +64,6 @@ pub struct BlockTracker {
     data: Arc<RwLock<HashMap<String, LastBlockInfo>>>,
     /// Map of chain name -> last known collator status
     collator_status: Arc<RwLock<HashMap<String, TrackedCollatorStatus>>>,
-    /// Map of chain name -> Slack message timestamp (for deletion on reconnect)
-    disconnect_messages: Arc<RwLock<HashMap<String, String>>>,
     /// Shutdown signal
     shutdown: Arc<RwLock<bool>>,
 }
@@ -76,7 +74,6 @@ impl BlockTracker {
         Self {
             data: Arc::new(RwLock::new(HashMap::new())),
             collator_status: Arc::new(RwLock::new(HashMap::new())),
-            disconnect_messages: Arc::new(RwLock::new(HashMap::new())),
             shutdown: Arc::new(RwLock::new(false)),
         }
     }
@@ -113,18 +110,6 @@ impl BlockTracker {
             info.is_connected = false;
             info.last_error = Some(error);
         }
-    }
-
-    /// Store a disconnect message timestamp for later deletion
-    async fn store_disconnect_message(&self, chain_name: &str, ts: String) {
-        let mut msgs = self.disconnect_messages.write().await;
-        msgs.insert(chain_name.to_string(), ts);
-    }
-
-    /// Get and remove a disconnect message timestamp
-    async fn take_disconnect_message(&self, chain_name: &str) -> Option<String> {
-        let mut msgs = self.disconnect_messages.write().await;
-        msgs.remove(chain_name)
     }
 
     /// Update tracked collator status
@@ -246,8 +231,6 @@ impl BlockTracker {
             }
         };
 
-        let mut is_down = false;
-
         // Reconnection loop
         loop {
             if self.is_shutdown().await {
@@ -260,28 +243,14 @@ impl BlockTracker {
                 Ok(api) => {
                     info!("Connected to {} for block tracking", chain_name);
                     
-                    // If we were down, delete the disconnect message
-                    if is_down {
-                        if let Some(ts) = self.take_disconnect_message(&chain_name).await {
-                            slack.delete_message(&ts).await;
-                        }
-                        is_down = false;
-                    }
+                    // Report reconnection (this will delete any existing disconnect alert)
+                    slack.report_reconnect(&chain_name).await;
                     
                     api
                 }
                 Err(e) => {
-                    if !is_down {
-                        let msg = format!(
-                            "⚠️ *{}* connection failed: `{}`. Retrying in 30s.",
-                            chain_name, e
-                        );
-                        warn!("{}", msg);
-                        if let Some(ts) = slack.send_and_get_ts(&msg).await {
-                            self.store_disconnect_message(&chain_name, ts).await;
-                        }
-                        is_down = true;
-                    }
+                    // Report disconnect (this will post or update the alert)
+                    slack.report_disconnect(&chain_name, &e.to_string()).await;
                     self.mark_disconnected(&chain_name, e.to_string()).await;
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     continue;
@@ -295,22 +264,17 @@ impl BlockTracker {
                     sub
                 }
                 Err(e) => {
-                    if !is_down {
-                        let msg = format!(
-                            "⚠️ *{}* subscription failed: `{}`. Retrying in 30s.",
-                            chain_name, e
-                        );
-                        warn!("{}", msg);
-                        if let Some(ts) = slack.send_and_get_ts(&msg).await {
-                            self.store_disconnect_message(&chain_name, ts).await;
-                        }
-                        is_down = true;
-                    }
+                    slack.report_disconnect(&chain_name, &format!("Subscription failed: {}", e)).await;
                     self.mark_disconnected(&chain_name, e.to_string()).await;
                     tokio::time::sleep(Duration::from_secs(30)).await;
                     continue;
                 }
             };
+
+            // Track last block check time for block production alerts
+            let mut last_block_alert_check = Instant::now();
+            const BLOCK_ALERT_THRESHOLD: Duration = Duration::from_secs(30 * 60); // 30 minutes
+            const BLOCK_ALERT_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60); // Check every 30 min
 
             // Process blocks
             while let Some(block_result) = block_sub.next().await {
@@ -328,12 +292,32 @@ impl BlockTracker {
                             Some(author) if author == collator_account => {
                                 info!("{}: Authored block #{}", chain_name, block_number);
                                 self.record_authored_block(&chain_name).await;
+                                
+                                // Clear any block production alert
+                                slack.report_block_authored(&chain_name).await;
                             }
                             Some(_) => {
                                 // Not our block, but connection is good
                             }
                             None => {
                                 debug!("{}: Could not determine block author for #{}", chain_name, block_number);
+                            }
+                        }
+
+                        // Check for block production alerts (every 30 min)
+                        if last_block_alert_check.elapsed() >= BLOCK_ALERT_CHECK_INTERVAL {
+                            last_block_alert_check = Instant::now();
+                            
+                            // Check if we haven't authored a block in 30 minutes
+                            if let Some(info) = self.get_last_block(&chain_name).await {
+                                if let Some(duration) = info.time_since_last_block() {
+                                    if duration >= BLOCK_ALERT_THRESHOLD {
+                                        slack.report_no_blocks(&chain_name, duration).await;
+                                    }
+                                } else if info.tracking_since.elapsed() >= BLOCK_ALERT_THRESHOLD {
+                                    // Never authored since we started tracking
+                                    slack.report_no_blocks(&chain_name, info.tracking_since.elapsed()).await;
+                                }
                             }
                         }
 
@@ -352,17 +336,8 @@ impl BlockTracker {
                         }
                     }
                     Err(e) => {
-                        if !is_down {
-                            let msg = format!(
-                                "⚠️ *{}* block stream error: `{}`. Reconnecting in 30s.",
-                                chain_name, e
-                            );
-                            warn!("{}", msg);
-                            if let Some(ts) = slack.send_and_get_ts(&msg).await {
-                                self.store_disconnect_message(&chain_name, ts).await;
-                            }
-                            is_down = true;
-                        }
+                        // Report disconnect
+                        slack.report_disconnect(&chain_name, &format!("Block stream error: {}", e)).await;
                         self.mark_disconnected(&chain_name, e.to_string()).await;
                         tokio::time::sleep(Duration::from_secs(30)).await;
                         break; // Break to reconnect
@@ -371,17 +346,7 @@ impl BlockTracker {
             }
 
             // Stream ended without error
-            if !is_down {
-                let msg = format!(
-                    "⚠️ *{}* block stream ended unexpectedly. Reconnecting in 30s.",
-                    chain_name
-                );
-                warn!("{}", msg);
-                if let Some(ts) = slack.send_and_get_ts(&msg).await {
-                    self.store_disconnect_message(&chain_name, ts).await;
-                }
-                is_down = true;
-            }
+            slack.report_disconnect(&chain_name, "Block stream ended unexpectedly").await;
             
             tokio::time::sleep(Duration::from_secs(30)).await;
         }

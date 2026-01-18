@@ -104,8 +104,15 @@ pub struct AppConfig {
     /// The proxy should be configured as NonTransfer type
     pub proxy_seed: String,
 
-    /// Slack webhook URL for notifications
+    /// Slack webhook URL for notifications (simpler, but can't update/delete)
     pub slack_webhook_url: Option<String>,
+
+    /// Slack bot token for full API access (enables update/delete messages)
+    /// Get from https://api.slack.com/apps -> OAuth & Permissions
+    pub slack_bot_token: Option<String>,
+
+    /// Slack channel ID or name (required when using bot token)
+    pub slack_channel: Option<String>,
 
     /// Slack user IDs to ping for actionable events (comma-separated)
     /// Format: U08CUCTA3R7,U12345ABCD

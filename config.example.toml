@@ -16,9 +16,25 @@ kusama_collator_address = "CYOURKUSAMAADDRESSHERE1234567890123456789012"
 # IMPORTANT: Keep this secret! Use environment variable COLLATOR_PROXY_SEED in production
 proxy_seed = "your twelve or twenty four word mnemonic phrase goes here"
 
-# Slack webhook URL for notifications (optional)
+# Slack webhook URL for notifications (optional, simpler setup)
 # If not set, notifications will be logged instead of sent to Slack
 slack_webhook_url = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+# Slack Bot Token for advanced features (optional, recommended)
+# Enables: message updates (disconnect duration), message deletion (on reconnect)
+# Get from: https://api.slack.com/apps -> OAuth & Permissions -> Bot User OAuth Token
+# Required scopes: chat:write, chat:write.public
+# If set, takes priority over webhook_url
+slack_bot_token = "xoxb-your-bot-token-here"
+
+# Slack channel ID or name (required if using bot_token)
+# Use channel ID (C1234567890) for private channels, name (#alerts) for public
+slack_channel = "#collator-alerts"
+
+# Slack user IDs to mention in alerts (optional)
+# Format: comma-separated list of user IDs
+# Find IDs: Click user profile -> More -> Copy member ID
+slack_user_ids = ["U08CUCTA3R7"]
 
 # How often to check collator status in continuous mode (seconds)
 check_interval_secs = 3600  # 1 hour
