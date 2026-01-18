@@ -773,6 +773,64 @@ impl SlackNotifier {
         let message = lines.join("\n");
         self.send(&message).await
     }
+
+    /// Notify about an error (for logging purposes)
+    pub async fn notify_error(&self, chain_name: &str, error: &str) -> Result<()> {
+        let message = format!(
+            "❌ *Error* on *{}*\n\n`{}`",
+            chain_name, error
+        );
+        self.send(&message).await
+    }
+
+    /// Alert that we cannot compete (bond too low)
+    pub async fn alert_cannot_compete(
+        &self,
+        chain_name: &str,
+        collator_address: &str,
+        available_balance: u128,
+        lowest_bond: u128,
+        needed: u128,
+        token_symbol: &str,
+        decimals: u32,
+    ) -> Result<()> {
+        self.add_outstanding_issue(chain_name);
+
+        let rate_key = format!("{}:cannot_compete", chain_name);
+        if !self.should_notify(&rate_key) {
+            return Ok(());
+        }
+
+        let available = format_balance(available_balance, decimals, token_symbol);
+        let lowest = format_balance(lowest_bond, decimals, token_symbol);
+        let need = format_balance(needed, decimals, token_symbol);
+        let mentions = self.format_user_mentions();
+
+        let message = format!(
+            "⚠️ *Cannot Compete* on *{}*\n\n\
+            Collator: `{}`\n\
+            Available: {}\n\
+            Lowest candidate bond: {}\n\
+            Need at least: {} more\n\n\
+            Please add funds to register as a candidate.{}\n\n\
+            _This alert is rate-limited to once every 4 hours._",
+            chain_name, collator_address, available, lowest, need, mentions
+        );
+
+        self.send(&message).await
+    }
+
+    /// Notify about successful registration (alias for notify_registration)
+    pub async fn notify_registration_success(
+        &self,
+        chain_name: &str,
+        collator_address: &str,
+        bond_amount: u128,
+        token_symbol: &str,
+        decimals: u32,
+    ) -> Result<()> {
+        self.notify_registration(chain_name, collator_address, bond_amount, token_symbol, decimals).await
+    }
 }
 
 /// Format a balance with proper decimals

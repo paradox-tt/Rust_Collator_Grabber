@@ -209,6 +209,10 @@ impl AppConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(21600u64); // 6 hours
 
+        // Load Slack bot token and channel (for advanced features)
+        let slack_bot_token = std::env::var("COLLATOR_SLACK_BOT_TOKEN").ok();
+        let slack_channel = std::env::var("COLLATOR_SLACK_CHANNEL").ok();
+
         // Load chain configs from config.toml if present
         let chains = Self::load_chain_configs()?;
 
@@ -217,6 +221,8 @@ impl AppConfig {
             kusama_collator_address: kusama_address,
             proxy_seed,
             slack_webhook_url: slack_webhook,
+            slack_bot_token,
+            slack_channel,
             slack_user_ids,
             check_interval_secs: check_interval,
             summary_interval_secs: summary_interval,

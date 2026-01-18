@@ -190,7 +190,7 @@ impl CollatorMonitor {
                             }
                             CollatorStatus::NotCollator => "Not a collator".to_string(),
                         };
-                        let _ = self.slack.notify_issue_resolved(&chain_name, was_manual, &status_str).await;
+                        let _ = self.slack.notify_issue_resolved(&chain_name, &collator_address, &status_str).await;
                     }
                 }
                 
