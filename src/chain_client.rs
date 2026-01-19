@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use subxt::dynamic::{At, Value};
 use subxt::utils::AccountId32;
 use subxt::{OnlineClient, PolkadotConfig};
+use subxt::tx::Payload;  // For encode_call_data method
 use tracing::{debug, info};
 
 use crate::config::{Network, SystemChain};
@@ -511,41 +512,321 @@ impl ChainClient {
         Ok(0)
     }
 
-    /// Generate batch call data for registerAsCandidate + updateCandidacyBond
-    /// This is for chains without proxy support where manual action is needed
+    /// Generate encoded call data for updating bond
+    /// Returns hex-encoded call data that can be pasted into Polkadot.js
+    pub fn generate_registration_call_data(&self, bond_amount: u128) -> String {
+        use crate::metadata::*;
+        use crate::config::{Network, SystemChain};
+        
+        // Generate the update_bond call using typed metadata
+        // This ensures correct pallet and call indices for each chain
+        let call_data = match (self.network, self.chain) {
+            (Network::Polkadot, SystemChain::BridgeHub) => {
+                bridge_hub_polkadot::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::Coretime) => {
+                coretime_polkadot::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::Collectives) => {
+                collectives_polkadot::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::People) => {
+                people_polkadot::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::AssetHub) => {
+                asset_hub_polkadot::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::BridgeHub) => {
+                bridge_hub_kusama::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::Coretime) => {
+                coretime_kusama::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::People) => {
+                people_kusama::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::AssetHub) => {
+                asset_hub_kusama::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::Encointer) => {
+                encointer_kusama::tx()
+                    .collator_selection()
+                    .update_bond(bond_amount)
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            _ => {
+                // Fallback - shouldn't happen
+                vec![]
+            }
+        };
+        
+        format!("0x{}", hex::encode(call_data))
+    }
+
+    /// Generate encoded call data for registerAsCandidate
+    pub fn generate_register_call_data(&self) -> String {
+        use crate::metadata::*;
+        use crate::config::{Network, SystemChain};
+        
+        let call_data = match (self.network, self.chain) {
+            (Network::Polkadot, SystemChain::BridgeHub) => {
+                bridge_hub_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::Coretime) => {
+                coretime_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::Collectives) => {
+                collectives_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::People) => {
+                people_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::AssetHub) => {
+                asset_hub_polkadot::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::BridgeHub) => {
+                bridge_hub_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::Coretime) => {
+                coretime_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::People) => {
+                people_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::AssetHub) => {
+                asset_hub_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::Encointer) => {
+                encointer_kusama::tx()
+                    .collator_selection()
+                    .register_as_candidate()
+                    .encode_call_data(&self.api.metadata())
+                    .unwrap_or_default()
+            }
+            _ => {
+                vec![]
+            }
+        };
+        
+        format!("0x{}", hex::encode(call_data))
+    }
+
+    /// Generate a proper utility.batch call that combines register + update_bond
+    /// Returns hex-encoded call data for the batch
     pub fn generate_registration_batch_call_data(&self, bond_amount: u128) -> String {
-        use parity_scale_codec::Encode;
+        use crate::metadata::*;
+        use crate::config::{Network, SystemChain};
         
-        // Build the calls manually using SCALE encoding
-        // Utility.batch_all call index is typically 0x1802 (pallet 24, call 2)
-        // CollatorSelection.registerAsCandidate is typically 0x1500 (pallet 21, call 0)
-        // CollatorSelection.updateCandidacyBond is typically 0x1504 (pallet 21, call 4)
+        // Generate batch call using typed metadata
+        let call_data = match (self.network, self.chain) {
+            (Network::Polkadot, SystemChain::BridgeHub) => {
+                // Create batch call
+                let batch = bridge_hub_polkadot::tx()
+                    .utility()
+                    .batch_all(vec![
+                        bridge_hub_polkadot::runtime_types::bridge_hub_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            bridge_hub_polkadot::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        bridge_hub_polkadot::runtime_types::bridge_hub_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            bridge_hub_polkadot::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::BridgeHub) => {
+                let batch = bridge_hub_kusama::tx()
+                    .utility()
+                    .batch_all(vec![
+                        bridge_hub_kusama::runtime_types::bridge_hub_kusama_runtime::RuntimeCall::CollatorSelection(
+                            bridge_hub_kusama::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        bridge_hub_kusama::runtime_types::bridge_hub_kusama_runtime::RuntimeCall::CollatorSelection(
+                            bridge_hub_kusama::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::Coretime) => {
+                let batch = coretime_polkadot::tx()
+                    .utility()
+                    .batch_all(vec![
+                        coretime_polkadot::runtime_types::coretime_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            coretime_polkadot::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        coretime_polkadot::runtime_types::coretime_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            coretime_polkadot::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::Coretime) => {
+                let batch = coretime_kusama::tx()
+                    .utility()
+                    .batch_all(vec![
+                        coretime_kusama::runtime_types::coretime_kusama_runtime::RuntimeCall::CollatorSelection(
+                            coretime_kusama::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        coretime_kusama::runtime_types::coretime_kusama_runtime::RuntimeCall::CollatorSelection(
+                            coretime_kusama::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::People) => {
+                let batch = people_polkadot::tx()
+                    .utility()
+                    .batch_all(vec![
+                        people_polkadot::runtime_types::people_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            people_polkadot::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        people_polkadot::runtime_types::people_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            people_polkadot::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::People) => {
+                let batch = people_kusama::tx()
+                    .utility()
+                    .batch_all(vec![
+                        people_kusama::runtime_types::people_kusama_runtime::RuntimeCall::CollatorSelection(
+                            people_kusama::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        people_kusama::runtime_types::people_kusama_runtime::RuntimeCall::CollatorSelection(
+                            people_kusama::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::Collectives) => {
+                let batch = collectives_polkadot::tx()
+                    .utility()
+                    .batch_all(vec![
+                        collectives_polkadot::runtime_types::collectives_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            collectives_polkadot::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        collectives_polkadot::runtime_types::collectives_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            collectives_polkadot::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Polkadot, SystemChain::AssetHub) => {
+                let batch = asset_hub_polkadot::tx()
+                    .utility()
+                    .batch_all(vec![
+                        asset_hub_polkadot::runtime_types::asset_hub_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            asset_hub_polkadot::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        asset_hub_polkadot::runtime_types::asset_hub_polkadot_runtime::RuntimeCall::CollatorSelection(
+                            asset_hub_polkadot::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::AssetHub) => {
+                let batch = asset_hub_kusama::tx()
+                    .utility()
+                    .batch_all(vec![
+                        asset_hub_kusama::runtime_types::asset_hub_kusama_runtime::RuntimeCall::CollatorSelection(
+                            asset_hub_kusama::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        asset_hub_kusama::runtime_types::asset_hub_kusama_runtime::RuntimeCall::CollatorSelection(
+                            asset_hub_kusama::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            (Network::Kusama, SystemChain::Encointer) => {
+                let batch = encointer_kusama::tx()
+                    .utility()
+                    .batch_all(vec![
+                        encointer_kusama::runtime_types::encointer_kusama_runtime::RuntimeCall::CollatorSelection(
+                            encointer_kusama::runtime_types::pallet_collator_selection::pallet::Call::register_as_candidate {}
+                        ),
+                        encointer_kusama::runtime_types::encointer_kusama_runtime::RuntimeCall::CollatorSelection(
+                            encointer_kusama::runtime_types::pallet_collator_selection::pallet::Call::update_bond { new_deposit: bond_amount }
+                        ),
+                    ]);
+                batch.encode_call_data(&self.api.metadata()).unwrap_or_default()
+            }
+            _ => vec![],
+        };
         
-        // Note: Exact pallet indices may vary per chain, but these are common for system chains
-        
-        // registerAsCandidate has no arguments
-        let register_call: Vec<u8> = vec![0x15, 0x00];
-        
-        // updateCandidacyBond(new_deposit: Balance)
-        let mut update_bond_call: Vec<u8> = vec![0x15, 0x04];
-        update_bond_call.extend(bond_amount.encode());
-        
-        // Wrap in utility.batch_all
-        // batch_all takes Vec<Call>
-        let mut batch_call: Vec<u8> = vec![0x18, 0x02];
-        
-        // Encode the vector of calls
-        // Length prefix (compact encoding for 2 items)
-        batch_call.push(0x08); // Compact encoding of 2
-        
-        // First call (registerAsCandidate) - need length prefix
-        batch_call.extend(&register_call);
-        
-        // Second call (updateCandidacyBond)
-        batch_call.extend(&update_bond_call);
-        
-        // Return as hex
-        format!("0x{}", hex::encode(batch_call))
+        format!("0x{}", hex::encode(call_data))
     }
 }
 

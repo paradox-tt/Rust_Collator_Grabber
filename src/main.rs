@@ -8,6 +8,7 @@ mod block_tracker;
 mod chain_client;
 mod config;
 mod error;
+mod metadata;
 mod monitor;
 mod slack;
 
@@ -20,6 +21,7 @@ use tracing_subscriber::EnvFilter;
 use crate::block_tracker::BlockTracker;
 use crate::config::AppConfig;
 use crate::monitor::{CollatorMonitor, MonitorStatus};
+use crate::slack::SlackNotifier;
 
 #[derive(Parser)]
 #[command(name = "collator-monitor")]
@@ -121,9 +123,29 @@ async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
         interval_secs, summary_interval_secs
     );
 
-    // Start background block trackers
+    // Create slack notifier - prefer bot token for full functionality
+    let slack = Arc::new(
+        if let (Some(bot_token), Some(channel)) = (&config.slack_bot_token, &config.slack_channel) {
+            info!("Using Slack bot token (message update/delete enabled)");
+            SlackNotifier::with_bot_token(
+                bot_token.clone(),
+                channel.clone(),
+                config.slack_user_ids_onchain.clone(),
+                config.slack_user_ids_ops.clone(),
+            )
+        } else {
+            info!("Using Slack webhook (message update/delete disabled)");
+            SlackNotifier::new(
+                config.slack_webhook_url.clone(),
+                config.slack_user_ids_onchain.clone(),
+                config.slack_user_ids_ops.clone(),
+            )
+        }
+    );
+
+    // Start background block trackers with slack integration
     let block_tracker = Arc::new(BlockTracker::new());
-    let tracker_handles = block_tracker.clone().start_tracking(config.clone());
+    let _tracker_handles = block_tracker.clone().start_tracking(config.clone(), slack.clone());
     
     // Give trackers a moment to initialize
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -157,9 +179,6 @@ async fn run_watch(config: AppConfig, interval_secs: u64) -> Result<()> {
     #[allow(unreachable_code)]
     {
         block_tracker.shutdown().await;
-        for handle in tracker_handles {
-            let _ = handle.await;
-        }
         Ok(())
     }
 }
@@ -193,10 +212,8 @@ async fn run_status(config: AppConfig) -> Result<()> {
         let supports_proxy = chain_supports_proxy(chain);
         let read_only_marker = if !supports_proxy { " [READ-ONLY - no proxy support]" } else { "" };
         
-        let rpc_url = config
-            .chain_config(Network::Polkadot, chain)
-            .map(|c| c.rpc_url.as_str())
-            .unwrap_or_else(|| default_rpc_url(Network::Polkadot, chain));
+        let rpc_urls = config.get_rpc_urls(Network::Polkadot, chain);
+        let rpc_url = rpc_urls.first().map(|s| s.as_str()).unwrap_or_else(|| default_rpc_url(Network::Polkadot, chain));
 
         match ChainClient::connect(rpc_url, Network::Polkadot, chain).await {
             Ok(client) => {
@@ -286,10 +303,8 @@ async fn run_status(config: AppConfig) -> Result<()> {
         let supports_proxy = chain_supports_proxy(chain);
         let read_only_marker = if !supports_proxy { " [READ-ONLY - no proxy support]" } else { "" };
 
-        let rpc_url = config
-            .chain_config(Network::Kusama, chain)
-            .map(|c| c.rpc_url.as_str())
-            .unwrap_or_else(|| default_rpc_url(Network::Kusama, chain));
+        let rpc_urls = config.get_rpc_urls(Network::Kusama, chain);
+        let rpc_url = rpc_urls.first().map(|s| s.as_str()).unwrap_or_else(|| default_rpc_url(Network::Kusama, chain));
 
         match ChainClient::connect(rpc_url, Network::Kusama, chain).await {
             Ok(client) => {

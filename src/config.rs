@@ -79,11 +79,36 @@ impl SystemChain {
 /// Configuration for a single chain endpoint
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChainConfig {
-    /// RPC WebSocket URL
-    pub rpc_url: String,
+    /// Primary RPC WebSocket URL (for backwards compatibility)
+    #[serde(default)]
+    pub rpc_url: Option<String>,
+    /// List of RPC WebSocket URLs (primary + fallbacks)
+    #[serde(default)]
+    pub rpc_urls: Vec<String>,
     /// Whether to monitor this chain
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+}
+
+impl ChainConfig {
+    /// Get all RPC URLs in order of preference
+    pub fn get_rpc_urls(&self) -> Vec<String> {
+        let mut urls = Vec::new();
+        
+        // Add single rpc_url first if present
+        if let Some(url) = &self.rpc_url {
+            urls.push(url.clone());
+        }
+        
+        // Add all rpc_urls
+        for url in &self.rpc_urls {
+            if !urls.contains(url) {
+                urls.push(url.clone());
+            }
+        }
+        
+        urls
+    }
 }
 
 fn default_enabled() -> bool {
@@ -104,12 +129,25 @@ pub struct AppConfig {
     /// The proxy should be configured as NonTransfer type
     pub proxy_seed: String,
 
-    /// Slack webhook URL for notifications
+    /// Slack webhook URL for notifications (simpler, but can't update/delete)
     pub slack_webhook_url: Option<String>,
 
-    /// Slack user IDs to ping for actionable events (comma-separated)
+    /// Slack bot token for full API access (enables update/delete messages)
+    /// Get from https://api.slack.com/apps -> OAuth & Permissions
+    pub slack_bot_token: Option<String>,
+
+    /// Slack channel ID or name (required when using bot token)
+    pub slack_channel: Option<String>,
+
+    /// Slack user IDs to ping for ON-CHAIN actions (registration, bond updates, manual actions)
+    /// These are people who can submit transactions
     /// Format: U08CUCTA3R7,U12345ABCD
-    pub slack_user_ids: Vec<String>,
+    pub slack_user_ids_onchain: Vec<String>,
+
+    /// Slack user IDs to ping for OPS issues (block production, disconnections)
+    /// These are people who can check/fix infrastructure issues
+    /// Format: U08CUCTA3R7,U12345ABCD
+    pub slack_user_ids_ops: Vec<String>,
 
     /// Check interval in seconds (for continuous monitoring mode)
     #[serde(default = "default_check_interval")]
@@ -140,6 +178,23 @@ impl AppConfig {
             Network::Polkadot => &self.polkadot_collator_address,
             Network::Kusama => &self.kusama_collator_address,
         }
+    }
+
+    /// Get all RPC URLs for a chain (from config or defaults)
+    pub fn get_rpc_urls(&self, network: Network, chain: SystemChain) -> Vec<String> {
+        // Check if there's a custom config
+        if let Some(config) = self.chain_config(network, chain) {
+            let urls = config.get_rpc_urls();
+            if !urls.is_empty() {
+                return urls;
+            }
+        }
+        
+        // Fall back to defaults
+        default_rpc_urls(network, chain)
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Get chain config for a specific network and chain
@@ -189,10 +244,19 @@ impl AppConfig {
         
         // Read optional environment variables
         let slack_webhook = std::env::var("COLLATOR_SLACK_WEBHOOK_URL").ok();
-        let slack_user_ids = std::env::var("COLLATOR_SLACK_USER_IDS")
+        
+        // On-chain action user IDs (for registration, bond updates, manual actions)
+        let slack_user_ids_onchain = std::env::var("COLLATOR_SLACK_USER_IDS_ONCHAIN")
             .ok()
             .map(|s| s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect())
             .unwrap_or_default();
+        
+        // Ops user IDs (for block production issues, disconnections)
+        let slack_user_ids_ops = std::env::var("COLLATOR_SLACK_USER_IDS_OPS")
+            .ok()
+            .map(|s| s.split(',').map(|id| id.trim().to_string()).filter(|id| !id.is_empty()).collect())
+            .unwrap_or_default();
+        
         let check_interval = std::env::var("COLLATOR_CHECK_INTERVAL_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -202,6 +266,10 @@ impl AppConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(21600u64); // 6 hours
 
+        // Load Slack bot token and channel (for advanced features)
+        let slack_bot_token = std::env::var("COLLATOR_SLACK_BOT_TOKEN").ok();
+        let slack_channel = std::env::var("COLLATOR_SLACK_CHANNEL").ok();
+
         // Load chain configs from config.toml if present
         let chains = Self::load_chain_configs()?;
 
@@ -210,7 +278,10 @@ impl AppConfig {
             kusama_collator_address: kusama_address,
             proxy_seed,
             slack_webhook_url: slack_webhook,
-            slack_user_ids,
+            slack_bot_token,
+            slack_channel,
+            slack_user_ids_onchain,
+            slack_user_ids_ops,
             check_interval_secs: check_interval,
             summary_interval_secs: summary_interval,
             chains,
@@ -235,27 +306,73 @@ impl AppConfig {
     }
 }
 
-/// Default RPC endpoints for system chains (LuckyFriday endpoints)
-pub fn default_rpc_url(network: Network, chain: SystemChain) -> &'static str {
+/// Default RPC endpoints for system chains
+/// Returns array of URLs: [LuckyFriday (primary), Stakeworld (fallback), Dotters (fallback)]
+pub fn default_rpc_urls(network: Network, chain: SystemChain) -> Vec<&'static str> {
     match (network, chain) {
-        // Polkadot system chains (LuckyFriday)
-        (Network::Polkadot, SystemChain::AssetHub) => "wss://rpc-asset-hub-polkadot.luckyfriday.io",
-        (Network::Polkadot, SystemChain::BridgeHub) => "wss://rpc-bridge-hub-polkadot.luckyfriday.io",
-        (Network::Polkadot, SystemChain::Collectives) => "wss://rpc-collectives-polkadot.luckyfriday.io",
-        (Network::Polkadot, SystemChain::Coretime) => "wss://rpc-coretime-polkadot.luckyfriday.io",
-        (Network::Polkadot, SystemChain::People) => "wss://rpc-people-polkadot.luckyfriday.io",
+        // Polkadot system chains
+        (Network::Polkadot, SystemChain::AssetHub) => vec![
+            "wss://rpc-asset-hub-polkadot.luckyfriday.io",
+            "wss://dot-asset-hub-rpc.stakeworld.io",
+            "wss://statemint-rpc.dotters.network",
+        ],
+        (Network::Polkadot, SystemChain::BridgeHub) => vec![
+            "wss://rpc-bridge-hub-polkadot.luckyfriday.io",
+            "wss://dot-bridge-hub-rpc.stakeworld.io",
+            "wss://bridge-hub-polkadot-rpc.dotters.network",
+        ],
+        (Network::Polkadot, SystemChain::Collectives) => vec![
+            "wss://rpc-collectives-polkadot.luckyfriday.io",
+            "wss://dot-collectives-rpc.stakeworld.io",
+            "wss://collectives-polkadot-rpc.dotters.network",
+        ],
+        (Network::Polkadot, SystemChain::Coretime) => vec![
+            "wss://rpc-coretime-polkadot.luckyfriday.io",
+            "wss://dot-coretime-rpc.stakeworld.io",
+            "wss://coretime-polkadot-rpc.dotters.network",
+        ],
+        (Network::Polkadot, SystemChain::People) => vec![
+            "wss://rpc-people-polkadot.luckyfriday.io",
+            "wss://dot-people-rpc.stakeworld.io",
+            "wss://people-polkadot-rpc.dotters.network",
+        ],
 
-        // Kusama system chains (LuckyFriday)
-        (Network::Kusama, SystemChain::AssetHub) => "wss://rpc-asset-hub-kusama.luckyfriday.io",
-        (Network::Kusama, SystemChain::BridgeHub) => "wss://rpc-bridge-hub-kusama.luckyfriday.io",
-        (Network::Kusama, SystemChain::Coretime) => "wss://rpc-coretime-kusama.luckyfriday.io",
-        (Network::Kusama, SystemChain::People) => "wss://rpc-people-kusama.luckyfriday.io",
-        (Network::Kusama, SystemChain::Encointer) => "wss://rpc-encointer-kusama.luckyfriday.io",
+        // Kusama system chains
+        (Network::Kusama, SystemChain::AssetHub) => vec![
+            "wss://rpc-asset-hub-kusama.luckyfriday.io",
+            "wss://ksm-asset-hub-rpc.stakeworld.io",
+            "wss://statemine-rpc.dotters.network",
+        ],
+        (Network::Kusama, SystemChain::BridgeHub) => vec![
+            "wss://rpc-bridge-hub-kusama.luckyfriday.io",
+            "wss://ksm-bridge-hub-rpc.stakeworld.io",
+            "wss://bridge-hub-kusama-rpc.dotters.network",
+        ],
+        (Network::Kusama, SystemChain::Coretime) => vec![
+            "wss://rpc-coretime-kusama.luckyfriday.io",
+            "wss://ksm-coretime-rpc.stakeworld.io",
+            "wss://coretime-kusama-rpc.dotters.network",
+        ],
+        (Network::Kusama, SystemChain::People) => vec![
+            "wss://rpc-people-kusama.luckyfriday.io",
+            "wss://ksm-people-rpc.stakeworld.io",
+            "wss://people-kusama-rpc.dotters.network",
+        ],
+        (Network::Kusama, SystemChain::Encointer) => vec![
+            "wss://rpc-encointer-kusama.luckyfriday.io",
+            "wss://ksm-encointer-rpc.stakeworld.io",
+            "wss://encointer-kusama-rpc.dotters.network",
+        ],
 
         // Invalid combinations
         (Network::Polkadot, SystemChain::Encointer) => panic!("Encointer is only on Kusama"),
         (Network::Kusama, SystemChain::Collectives) => panic!("Collectives is only on Polkadot"),
     }
+}
+
+/// Legacy function for backwards compatibility - returns first URL
+pub fn default_rpc_url(network: Network, chain: SystemChain) -> &'static str {
+    default_rpc_urls(network, chain)[0]
 }
 
 /// Check if a chain supports proxy accounts for collator registration

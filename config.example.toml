@@ -16,61 +16,86 @@ kusama_collator_address = "CYOURKUSAMAADDRESSHERE1234567890123456789012"
 # IMPORTANT: Keep this secret! Use environment variable COLLATOR_PROXY_SEED in production
 proxy_seed = "your twelve or twenty four word mnemonic phrase goes here"
 
-# Slack webhook URL for notifications (optional)
+# Slack webhook URL for notifications (optional, simpler setup)
 # If not set, notifications will be logged instead of sent to Slack
 slack_webhook_url = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+# Slack Bot Token for advanced features (optional, recommended)
+# Enables: message updates (disconnect duration), message deletion (on reconnect)
+# Get from: https://api.slack.com/apps -> OAuth & Permissions -> Bot User OAuth Token
+# Required scopes: chat:write, chat:write.public
+# If set, takes priority over webhook_url
+slack_bot_token = "xoxb-your-bot-token-here"
+
+# Slack channel ID or name (required if using bot_token)
+# Use channel ID (C1234567890) for private channels, name (#alerts) for public
+slack_channel = "#collator-alerts"
+
+# Slack user IDs to ping for ON-CHAIN actions (registration, bond updates, manual actions)
+# These are people who can submit transactions
+# Find IDs: Click user profile -> More -> Copy member ID
+slack_user_ids_onchain = ["U08CUCTA3R7"]
+
+# Slack user IDs to ping for OPS issues (block production, disconnections, collator removal)
+# These are people who can check/fix infrastructure issues
+slack_user_ids_ops = ["U12345ABCD", "U67890EFGH"]
 
 # How often to check collator status in continuous mode (seconds)
 check_interval_secs = 3600  # 1 hour
 
 # Chain-specific configurations (optional)
-# If not specified, default LuckyFriday RPC endpoints will be used
-# Format: [chains."network_chain"]
+# If not specified, default RPC endpoints will be used (LuckyFriday primary, Dwellir/Dotters fallback)
+#
+# You can specify multiple RPC URLs for failover:
+#   rpc_urls = ["wss://primary.example.com", "wss://fallback1.example.com", "wss://fallback2.example.com"]
+# Or a single URL for backwards compatibility:
+#   rpc_url = "wss://single.example.com"
+#
+# The system will try each URL in order until one connects.
+# Slack is only notified if ALL URLs fail.
 #
 # NOTE: BridgeHub chains do NOT support proxy accounts for collator registration.
 #       They will still be checked for status, but actions will be flagged as
 #       "manual action required" instead of being performed automatically.
 
-# Polkadot chains (LuckyFriday endpoints)
-[chains.polkadot_assethub]
-rpc_url = "wss://rpc-asset-hub-polkadot.luckyfriday.io"
-enabled = true
+# Example with multiple fallback RPCs:
+# [chains.polkadot_assethub]
+# rpc_urls = [
+#     "wss://rpc-asset-hub-polkadot.luckyfriday.io",
+#     "wss://asset-hub-polkadot-rpc.dwellir.com",
+#     "wss://statemint-rpc.dotters.network"
+# ]
+# enabled = true
+
+# Polkadot chains - using defaults (comment out to use built-in fallback URLs)
+# [chains.polkadot_assethub]
+# enabled = true
 
 # BridgeHub - status checked but no automatic actions (no proxy support)
-[chains.polkadot_bridgehub]
-rpc_url = "wss://rpc-bridge-hub-polkadot.luckyfriday.io"
-enabled = true
+# [chains.polkadot_bridgehub]
+# enabled = true
 
-[chains.polkadot_collectives]
-rpc_url = "wss://rpc-collectives-polkadot.luckyfriday.io"
-enabled = true
+# [chains.polkadot_collectives]
+# enabled = true
 
-[chains.polkadot_coretime]
-rpc_url = "wss://rpc-coretime-polkadot.luckyfriday.io"
-enabled = true
+# [chains.polkadot_coretime]
+# enabled = true
 
-[chains.polkadot_people]
-rpc_url = "wss://rpc-people-polkadot.luckyfriday.io"
-enabled = true
+# [chains.polkadot_people]
+# enabled = true
 
-# Kusama chains (LuckyFriday endpoints)
-[chains.kusama_assethub]
-rpc_url = "wss://rpc-asset-hub-kusama.luckyfriday.io"
-enabled = true
+# Kusama chains - using defaults
+# [chains.kusama_assethub]
+# enabled = true
 
-# BridgeHub - status checked but no automatic actions (no proxy support)
-[chains.kusama_bridgehub]
-rpc_url = "wss://rpc-bridge-hub-kusama.luckyfriday.io"
-enabled = true
+# [chains.kusama_bridgehub]
+# enabled = true
 
-[chains.kusama_coretime]
-rpc_url = "wss://rpc-coretime-kusama.luckyfriday.io"
-enabled = true
+# [chains.kusama_coretime]
+# enabled = true
 
-[chains.kusama_people]
-rpc_url = "wss://rpc-people-kusama.luckyfriday.io"
-enabled = true
+# [chains.kusama_people]
+# enabled = true
 
-[chains.kusama_encointer]
-rpc_url = "wss://rpc-encointer-kusama.luckyfriday.io"
-enabled = true
+# [chains.kusama_encointer]
+# enabled = true
