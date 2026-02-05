@@ -376,12 +376,7 @@ pub fn default_rpc_url(network: Network, chain: SystemChain) -> &'static str {
 }
 
 /// Check if a chain supports proxy accounts for collator registration
-/// BridgeHub doesn't support proxy accounts, so it's read-only (status check only)
 pub fn chain_supports_proxy(chain: SystemChain) -> bool {
-    match chain {
-        // BridgeHub doesn't support proxy accounts for collator registration
-        SystemChain::BridgeHub => false,
-        // All other chains support proxy
-        _ => true,
-    }
+    //All systemchains now support proxy
+    true
 }
